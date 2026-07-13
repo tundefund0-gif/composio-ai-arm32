@@ -1,121 +1,190 @@
-#!/usr/bin/env python3
-"""Zen Agent CLI — rich chat interface with 1,000+ tools."""
+"""Zen Agent CLI — interactive, oneshot, tools search, token stats."""
 from __future__ import annotations
 
-import logging
-import shutil
+import json
+import os
 import sys
-import threading
+import time
 from typing import Optional
 
 import typer
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.table import Table
+from rich.live import Live
+from rich.spinner import Spinner
+from rich import box
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from core.agent import ZenAgent
 from core.llm_client import LLMResponse
 
-logging.basicConfig(level=logging.WARNING)
-logger = logging.getLogger("zen-agent")
-
-app = typer.Typer(name="zen", help="Zen Agent — AI assistant with 1,000+ Composio tools", add_completion=False, no_args_is_help=False)
+app = typer.Typer(help="Zen Agent — AI assistant with 1,000+ Composio tools")
+console = Console()
 
 
-@app.callback(invoke_without_command=True)
-def main(ctx: typer.Context, user: str = typer.Option("cli-user", "--user", "-u", help="User ID"),
-         session: Optional[str] = typer.Option(None, "--session", "-s", help="Existing session ID"),
-         oneshot: Optional[str] = typer.Option(None, "--oneshot", "-1", help="Single question"),
-         no_sandbox: bool = typer.Option(False, "--no-sandbox"), verbose: bool = typer.Option(False, "--verbose", "-v")):
-    if verbose: logging.getLogger("zen-agent").setLevel(logging.INFO)
-    if ctx.invoked_subcommand is not None: return
+def _get_agent(user_id: str, session_id: Optional[str] = None) -> ZenAgent:
     try:
-        agent = ZenAgent(user_id=user, session_id=session, enable_sandbox=not no_sandbox)
+        return ZenAgent(user_id=user_id, session_id=session_id)
     except Exception as e:
-        typer.secho(f"❌ Failed to init: {e}", fg=typer.colors.RED, err=True)
+        console.print(f"[red]Failed to initialize agent:[/red] {e}")
         raise typer.Exit(1)
 
-    cols, _ = shutil.get_terminal_size()
-    typer.secho("┌" + "─" * (cols - 2) + "┐", fg=typer.colors.BRIGHT_BLACK)
-    typer.secho(f"│ 🤖  Zen Agent  │  User: {user}  │  Session: {agent.session_id[:16]}…", fg=typer.colors.CYAN, bold=True)
-    typer.secho("│ Commands: /quit /clear /info", fg=typer.colors.BRIGHT_BLACK)
-    typer.secho("└" + "─" * (cols - 2) + "┘", fg=typer.colors.BRIGHT_BLACK)
-    print()
 
-    if oneshot:
-        _handle_oneshot(agent, oneshot)
-        return
-    _loop(agent)
+@app.command()
+def interactive(
+    user: str = typer.Option("cli-user", "--user", "-u", help="User ID"),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Existing session ID"),
+    no_sandbox: bool = typer.Option(False, "--no-sandbox", help="Disable sandbox"),
+):
+    """Interactive chat mode with streaming, colored output & token stats."""
+    agent = _get_agent(user, session)
+    console.print(Panel.fit(
+        f"[bold cyan]🧠 Zen Agent[/bold cyan]\n"
+        f"Model: {agent._llm.model} | Session: {agent.session_id[:20]}... | "
+        f"Max tokens: {agent._llm.max_tokens:,}",
+        border_style="cyan",
+    ))
+    console.print("[dim]Type /clear to reset, /info for stats, /quit to exit[/dim]\n")
 
-
-def _handle_oneshot(agent: ZenAgent, q: str):
-    try:
-        resp = agent.chat(q)
-        if isinstance(resp, LLMResponse):
-            print(resp.content)
-    except Exception as e:
-        typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
-
-
-def _loop(agent: ZenAgent):
     while True:
         try:
-            inp = typer.prompt("You", prompt_suffix=" > ", err=True)
-        except typer.Abort:
-            print()
+            prompt = console.input("[bold green]You:[/bold green] ")
+        except (EOFError, KeyboardInterrupt):
             break
-        if not inp.strip(): continue
-        c = inp.strip().lower()
-        if c in ("/quit", "/exit", "/q"): typer.secho("👋 Goodbye!", fg=typer.colors.GREEN); break
-        if c in ("/clear", "/reset"): agent.clear_history(); typer.secho("🧹 Cleared.", fg=typer.colors.YELLOW); continue
-        if c in ("/info", "/session"):
-            for k, v in agent.get_info().items(): typer.secho(f"  {k}: {v}", fg=typer.colors.BRIGHT_BLACK)
+        if not prompt.strip():
             continue
-        if c.startswith("/"): typer.secho(f" Unknown: {c}", fg=typer.colors.RED); continue
+        if prompt.strip().lower() in ("/quit", "/exit", "/q"):
+            break
+        if prompt.strip().lower() == "/clear":
+            agent.clear_history()
+            console.print("[yellow]Conversation cleared.[/yellow]")
+            continue
+        if prompt.strip().lower() == "/info":
+            info = agent.get_info()
+            t = Table(box=box.SIMPLE)
+            t.add_column("Key", style="cyan")
+            t.add_column("Value")
+            for k, v in info.items():
+                t.add_row(k, str(v))
+            console.print(t)
+            continue
 
-        try:
-            print()
-            resp = agent.chat(inp)
-            if isinstance(resp, LLMResponse):
-                print(resp.content)
-                if resp.reasoning:
-                    print()
-                    typer.secho("── 🤔 Reasoning ──", fg=typer.colors.BRIGHT_BLACK)
-                    print(resp.reasoning[:500])
-            print()
-        except Exception as e:
-            typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
+        # Stream response with spinner
+        spinner = Spinner("dots", text="[yellow]Thinking...[/yellow]")
+        with Live(spinner, refresh_per_second=10, console=console):
+            full = ""
+            reasoning = ""
+            start = time.time()
+            for token in agent.chat(prompt, stream=True):
+                if token.startswith("__reasoning__"):
+                    reasoning += token[13:]
+                else:
+                    full += token
+            elapsed = time.time() - start
+
+        if reasoning:
+            with console.status("[dim]Reasoning complete[/dim]"):
+                pass
+
+        # Print response as markdown
+        console.print()
+        md = Markdown(full.strip())
+        console.print(Panel(md, border_style="blue", title="[bold]AI[/bold]", title_align="left"))
+        console.print(f"[dim]Response time: {elapsed:.1f}s | "
+                      f"Length: {len(full):,} chars | "
+                      f"History: {len(agent._messages) // 2} turns[/dim]")
+        console.print()
 
 
 @app.command()
-def tools(query: str = typer.Argument(..., help="Search query"), user: str = typer.Option("cli-user", "--user", "-u")):
-    """Search Composio tools."""
-    agent = ZenAgent(user_id=user, enable_sandbox=False)
-    try:
-        r = agent._composio.search_tools(agent.session_id, query)
-        schemas = r.get("data", {}).get("tool_schemas", {})
-        if not schemas: typer.secho("No tools found.", fg=typer.colors.YELLOW); return
-        typer.secho(f"\nFound {len(schemas)} tool(s):\n", fg=typer.colors.CYAN, bold=True)
-        for slug, info in list(schemas.items())[:20]:
-            tk = info.get("toolkit", "")
-            desc = info.get("description", "")[:100]
-            typer.secho(f"  • {slug}", fg=typer.colors.GREEN)
-            if tk: typer.secho(f"    [{tk}]", fg=typer.colors.BRIGHT_MAGENTA)
-            if desc: typer.secho(f"    {desc}", fg=typer.colors.BRIGHT_BLACK)
-        print()
-    except Exception as e:
-        typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
+def oneshot(
+    question: str = typer.Argument(..., help="Single question"),
+    user: str = typer.Option("cli-user", "--user", "-u"),
+    session: Optional[str] = typer.Option(None, "--session", "-s"),
+):
+    """Ask a single question (non-streaming)."""
+    agent = _get_agent(user, session)
+    start = time.time()
+    with console.status("[yellow]Processing...[/yellow]"):
+        resp = agent.chat(question)
+    elapsed = time.time() - start
 
-
-@app.command()
-def session(user: str = "cli-user", create: bool = typer.Option(False, "-c", "--create"),
-            show: Optional[str] = typer.Option(None, "-s", "--show")):
-    """Manage sessions."""
-    if create:
-        a = ZenAgent(user_id=user)
-        typer.secho(f"Session: {a.session_id}", fg=typer.colors.GREEN)
-    elif show:
-        a = ZenAgent(user_id=user, session_id=show)
-        for k, v in a.get_info().items(): typer.secho(f"  {k}: {v}")
+    if isinstance(resp, LLMResponse):
+        md = Markdown(resp.content.strip())
+        console.print(Panel(md, border_style="blue", title="[bold]Response[/bold]", title_align="left"))
+        if resp.input_tokens or resp.output_tokens:
+            console.print(f"[dim]Time: {elapsed:.1f}s | "
+                          f"Input: {resp.input_tokens:,} | "
+                          f"Output: {resp.output_tokens:,} | "
+                          f"Model: {resp.model}[/dim]")
     else:
-        typer.secho("Use --create or --show <id>", fg=typer.colors.YELLOW)
+        console.print(str(resp)[:2000])
+
+
+@app.command()
+def tools(
+    query: str = typer.Argument("", help="Search query"),
+    user: str = typer.Option("cli-user", "--user", "-u"),
+):
+    """Search Composio tools."""
+    agent = _get_agent(user)
+    if query:
+        with console.status(f"[yellow]Searching for '{query}'...[/yellow]"):
+            result = agent._composio.search_tools(agent.session_id, query)
+        data = result.get("data", {})
+        results = data.get("results", data.get("tools", []))
+        if isinstance(results, list) and results:
+            t = Table(box=box.SIMPLE)
+            t.add_column("#", style="dim")
+            t.add_column("Tool", style="cyan")
+            t.add_column("Description")
+            for i, r in enumerate(results[:30], 1):
+                name = r.get("slug", r.get("name", "?"))
+                desc = r.get("description", "")[:100]
+                t.add_row(str(i), name, desc)
+            console.print(t)
+        else:
+            console.print("[yellow]No tools found.[/yellow]")
+    else:
+        with console.status("[yellow]Loading tools...[/yellow]"):
+            result = agent._composio.list_all_tools(page=1, page_size=50)
+        items = result.get("items", [])
+        if items:
+            t = Table(box=box.SIMPLE)
+            t.add_column("Slug", style="cyan")
+            t.add_column("App")
+            t.add_column("Description")
+            for i in items[:30]:
+                slug = i.get("slug", "?")
+                app = (i.get("toolkit", {}) or {}).get("name", i.get("app", ""))
+                desc = (i.get("description", "") or "")[:80]
+                t.add_row(slug, app, desc)
+            console.print(t)
+            console.print(f"[dim]Showing 30 of {len(items)} tools[/dim]")
+        else:
+            console.print("[yellow]No tools loaded.[/yellow]")
+
+
+@app.command()
+def session(
+    action: str = typer.Argument("info", help="Action: info, reset"),
+    user: str = typer.Option("cli-user", "--user", "-u"),
+):
+    """Manage sessions."""
+    agent = _get_agent(user)
+    if action == "reset":
+        agent.clear_history()
+        console.print("[green]Session history cleared.[/green]")
+    else:
+        info = agent.get_info()
+        t = Table(box=box.SIMPLE)
+        t.add_column("Key", style="cyan")
+        t.add_column("Value")
+        for k, v in info.items():
+            t.add_row(k, str(v))
+        console.print(t)
 
 
 if __name__ == "__main__":
