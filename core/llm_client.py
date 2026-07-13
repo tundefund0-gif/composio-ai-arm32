@@ -55,28 +55,73 @@ class LLMClient:
             return LLMResponse(r.json())
 
     def _stream(self, body: Dict[str, Any]) -> Generator[str, None, None]:
+        """Stream tokens from API. Detects tool calls in stream and yields them as __tool_calls__:..."""
         with httpx.Client(timeout=180.0) as cl:
             with cl.stream("POST", f"{self.base_url}/chat/completions", json=body, headers=self._headers()) as r:
                 if r.status_code >= 400:
                     try: d = r.json()
                     except Exception: d = r.text
                     raise LLMError(f"LLM API error: HTTP {r.status_code} - {d}")
+                
+                # Accumulate tool call deltas across chunks
+                tool_call_deltas: Dict[int, Dict[str, Any]] = {}
+                finish_reason = None
+                
                 for line in r.iter_lines():
-                    if not line or line.startswith(":keep-alive"): continue
+                    if not line or line.startswith(":keep-alive"):
+                        continue
                     if line.startswith("data: "):
                         d = line[6:].strip()
-                        if d == "[DONE]": break
+                        if d == "[DONE]":
+                            break
                         try:
                             chunk = json.loads(d)
                             choices = chunk.get("choices", [])
-                            if not choices: continue
+                            if not choices:
+                                continue
                             delta = choices[0].get("delta", {})
+                            
+                            # Capture finish_reason
+                            fr = choices[0].get("finish_reason")
+                            if fr:
+                                finish_reason = fr
+                            
+                            # Capture reasoning content
                             rc = delta.get("reasoning_content", "")
-                            if rc: yield f"__reasoning__{rc}"
+                            if rc:
+                                yield f"__reasoning__{rc}"
+                            
+                            # Capture content
                             c = delta.get("content", "")
-                            if c: yield c
+                            if c:
+                                yield c
+                            
+                            # Capture tool calls from delta
+                            tcs = delta.get("tool_calls", [])
+                            for tc in tcs:
+                                idx = tc.get("index", 0)
+                                if idx not in tool_call_deltas:
+                                    tool_call_deltas[idx] = {
+                                        "id": tc.get("id", ""),
+                                        "type": tc.get("type", "function"),
+                                        "function": {"name": "", "arguments": ""}
+                                    }
+                                cur = tool_call_deltas[idx]
+                                tc_fn = tc.get("function", {})
+                                if tc.get("id"):
+                                    cur["id"] = tc["id"]
+                                if tc_fn.get("name"):
+                                    cur["function"]["name"] += tc_fn["name"]
+                                if tc_fn.get("arguments"):
+                                    cur["function"]["arguments"] += tc_fn["arguments"]
+                        
                         except json.JSONDecodeError:
                             continue
+                
+                # If tool calls were accumulated, yield them after stream ends
+                if tool_call_deltas and finish_reason == "tool_calls":
+                    sorted_calls = [tool_call_deltas[i] for i in sorted(tool_call_deltas.keys())]
+                    yield f"__tool_calls__:{json.dumps(sorted_calls)}"
 
     def complete(self, prompt: str, system: Optional[str] = None) -> str:
         messages = []

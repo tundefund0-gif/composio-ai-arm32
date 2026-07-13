@@ -74,10 +74,10 @@ META_TOOL_DEFS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "code": {"type": "string", "description": "Python code to execute"},
+                    "code_to_execute": {"type": "string", "description": "Python code to execute"},
                     "language": {"type": "string", "enum": ["python"], "description": "Language"}
                 },
-                "required": ["code"]
+                "required": ["code_to_execute"]
             }
         }
     },
@@ -181,32 +181,92 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
         self._messages.append({"role": "assistant", "content": resp.content})
         return resp
 
-    def _stream(self) -> Generator[str, None, None]:
-        msgs = self._build_msgs()
-        gen = self._llm.chat(msgs, stream=True)
-        if isinstance(gen, Generator):
-            full, reasoning = "", ""
-            for token in gen:
-                if token.startswith("__reasoning__"):
-                    reasoning += token[13:]
-                    yield f"__reasoning__{token[13:]}"
-                else:
-                    full += token
-                    yield token
-            self._messages.append({"role": "assistant", "content": full})
-
     def _handle_tools(self, resp: LLMResponse, msgs: List[Dict[str, Any]]) -> LLMResponse:
         msgs.append(resp.message)
         for tc in (resp.tool_calls or []):
             fn = tc["function"]["name"]
-            try: args = json.loads(tc["function"]["arguments"])
-            except json.JSONDecodeError: args = {}
+            try:
+                args = json.loads(tc["function"]["arguments"])
+            except json.JSONDecodeError:
+                args = {}
             result = self._exec_composio(fn, args)
             result_str = json.dumps(result, default=str)[:10000]
             msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": result_str})
         final = self._llm.chat(msgs)
         self._messages.append({"role": "assistant", "content": final.content})
         return final
+
+    def _stream(self) -> Generator[str, None, None]:
+        """Streaming path with tool call handling."""
+        msgs = self._build_msgs()
+        gen = self._llm.chat(msgs, stream=True, tools=META_TOOL_DEFS)
+        
+        if not isinstance(gen, Generator):
+            return
+        
+        # Collect stream — if tool calls are found, execute them and loop
+        while True:
+            current_gen = gen
+            full_content = ""
+            tool_calls_data = None
+            has_reasoning = False
+            
+            for token in current_gen:
+                if token.startswith("__reasoning__"):
+                    has_reasoning = True
+                    yield token
+                elif token.startswith("__tool_calls__:"):
+                    # Tool calls detected! Parse them
+                    try:
+                        tool_calls_data = json.loads(token[len("__tool_calls__:"):])
+                    except json.JSONDecodeError:
+                        tool_calls_data = None
+                else:
+                    full_content += token
+                    yield token
+            
+            if tool_calls_data:
+                # Execute tools and add results to messages
+                # If we had content streamed before tool calls, add it as assistant message
+                if full_content.strip():
+                    msgs.append({"role": "assistant", "content": full_content})
+                
+                # Add tool call messages and results
+                assistant_msg = {"role": "assistant", "content": full_content.strip() or None, "tool_calls": []}
+                for tc in tool_calls_data:
+                    tc_entry = {
+                        "id": tc.get("id", f"call_{hash(str(tc)) % 1000000}"),
+                        "type": "function",
+                        "function": {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}
+                    }
+                    assistant_msg["tool_calls"].append(tc_entry)
+                
+                msgs.append(assistant_msg)
+                
+                for tc in tool_calls_data:
+                    fn = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = self._exec_composio(fn, args)
+                    result_str = json.dumps(result, default=str)[:10000]
+                    msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", f"call_{hash(str(tc)) % 1000000}"),
+                        "content": result_str
+                    })
+                
+                # Make follow-up call - stream the response
+                gen = self._llm.chat(msgs, stream=True)
+                if not isinstance(gen, Generator):
+                    break
+                # Continue loop to stream the follow-up response
+                continue
+            else:
+                # No tool calls — store the response and done
+                self._messages.append({"role": "assistant", "content": full_content})
+                break
 
     def _exec_composio(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
         try:
