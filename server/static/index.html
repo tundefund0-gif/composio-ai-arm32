@@ -333,7 +333,7 @@ select{appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%
       <!-- Input Area - Always at bottom -->
       <div class="input-area">
         <div class="input-bar">
-          <textarea id="chatInput" placeholder="Message AI..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+          <textarea id="chatInput" placeholder="Message AI..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this);updateSendBtn()"></textarea>
           <button class="send-btn" id="stopBtn" onclick="abortStream()" title="Stop" style="display:none;background:var(--error)">⏹</button>
           <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="Send">➤</button>
         </div>
