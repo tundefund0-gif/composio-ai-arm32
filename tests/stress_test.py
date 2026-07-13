@@ -1,5 +1,7 @@
 """Stress test — every component under maximum load."""
-import json, sys, time
+import json, os, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 PASS = 0; FAIL = 0
 

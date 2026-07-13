@@ -14,7 +14,19 @@ logger = logging.getLogger("llm-client")
 
 
 class LLMError(Exception):
-    pass
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        body: Any = None,
+        retryable: bool = True,
+        retry_after: Optional[float] = None,
+    ):
+        self.status_code = status_code
+        self.body = body
+        self.retryable = retryable
+        self.retry_after = retry_after
+        super().__init__(message)
 
 
 class LLMResponse:
@@ -72,22 +84,26 @@ class LLMClient:
         for attempt in range(retries + 1):
             try:
                 return self._sync(body)
-            except (httpx.TimeoutException, httpx.ConnectError, LLMError) as e:
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
                 last_err = e
                 logger.warning("LLM call attempt %d/%d failed: %s", attempt + 1, retries + 1, e)
                 if attempt < retries:
                     time.sleep(1.5 * (attempt + 1))
+            except LLMError as e:
+                last_err = e
+                if not e.retryable:
+                    raise
+                logger.warning("LLM call attempt %d/%d failed: %s", attempt + 1, retries + 1, e)
+                if attempt < retries:
+                    delay = e.retry_after if e.retry_after is not None else 1.5 * (attempt + 1)
+                    time.sleep(delay)
         raise LLMError(f"LLM API failed after {retries + 1} attempts: {last_err}")
 
     def _sync(self, body: Dict) -> LLMResponse:
         with httpx.Client(timeout=config.llm_timeout) as cl:
             r = cl.post(f"{self.base_url}/chat/completions", json=body, headers=self._headers())
             if r.status_code >= 400:
-                try:
-                    d = r.json()
-                except Exception:
-                    d = r.text
-                raise LLMError(f"LLM API error: HTTP {r.status_code} - {d}")
+                raise self._http_error(r)
             return LLMResponse(r.json())
 
     def _stream(self, body: Dict) -> Generator[str, None, None]:
@@ -95,11 +111,8 @@ class LLMClient:
         with httpx.Client(timeout=config.llm_timeout) as cl:
             with cl.stream("POST", f"{self.base_url}/chat/completions", json=body, headers=self._headers()) as r:
                 if r.status_code >= 400:
-                    try:
-                        d = r.json()
-                    except Exception:
-                        d = r.text
-                    raise LLMError(f"LLM API error: HTTP {r.status_code} - {d}")
+                    r.read()
+                    raise self._http_error(r)
 
                 tool_call_deltas: Dict[int, Dict] = {}
                 finish_reason = None
@@ -163,4 +176,59 @@ class LLMClient:
         return self.chat(messages).content
 
     def _headers(self) -> Dict[str, str]:
+        if not self.api_key:
+            raise LLMError("OPENGATE_API_KEY is required", retryable=False)
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+
+    def _http_error(self, resp: httpx.Response) -> LLMError:
+        try:
+            body: Any = resp.json()
+        except Exception:
+            body = resp.text
+
+        retry_after = self._retry_after(resp.headers.get("retry-after"))
+        retryable = self._is_retryable(resp.status_code, body, retry_after)
+        err_type, err_msg = self._error_details(body)
+
+        detail = f"LLM API error: HTTP {resp.status_code}"
+        if err_type:
+            detail += f" {err_type}"
+        if err_msg:
+            detail += f" - {err_msg}"
+        elif body:
+            detail += f" - {body}"
+
+        return LLMError(
+            detail,
+            status_code=resp.status_code,
+            body=body,
+            retryable=retryable,
+            retry_after=retry_after,
+        )
+
+    @staticmethod
+    def _retry_after(value: Optional[str]) -> Optional[float]:
+        if not value:
+            return None
+        try:
+            return max(float(value), 0.0)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _error_details(body: Any) -> tuple[Optional[str], Optional[str]]:
+        if isinstance(body, dict):
+            err = body.get("error")
+            if isinstance(err, dict):
+                return err.get("type"), err.get("message")
+            if isinstance(err, str):
+                return None, err
+        return None, None
+
+    def _is_retryable(self, status_code: int, body: Any, retry_after: Optional[float]) -> bool:
+        err_type, _ = self._error_details(body)
+        if err_type == "FreeUsageLimitError":
+            return False
+        if status_code == 429:
+            return retry_after is not None
+        return status_code == 408 or status_code >= 500
