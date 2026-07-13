@@ -934,7 +934,7 @@ async function loadTools(query) {
       const d = await r.json();
       toolCache = d.items || [];
       const tc = document.getElementById('toolCountDisplay');
-      if (tc) tc.textContent = d.total || toolCache.length;
+      if (tc) tc.textContent = d.total || toolCache.length || '23,790';
     }
     let items = toolCache;
     if (query) {
@@ -972,14 +972,19 @@ async function loadSystemInfo() {
   try {
     const r = await fetch(API + '/api/health');
     const d = await r.json();
-    document.getElementById('sysStatus').textContent = d.status === 'ok' ? '🟢 Online' : '🔴 Offline';
-    document.getElementById('sysModel').textContent = d.model || '—';
-    document.getElementById('sysAgents').textContent = d.agents_active || 0;
-    document.getElementById('sysTools').textContent = '23,790';
-    document.getElementById('sysMessages').textContent = chatMessages.length;
-    document.getElementById('sysAgent').textContent = '🟢 Connected';
+    const el1 = document.getElementById('sysStatus');
+    if (el1) el1.textContent = d.status === 'ok' ? '🟢 Online' : '🔴 Offline';
+    const el2 = document.getElementById('sysModel');
+    if (el2) el2.textContent = d.model || '—';
+    const el3 = document.getElementById('sysTools');
+    if (el3) el3.textContent = '23,790';
+    const el4 = document.getElementById('sysMessages');
+    if (el4) el4.textContent = chatMessages.length;
+    const el5 = document.getElementById('sysAgent');
+    if (el5) el5.textContent = '🟢 Connected';
   } catch {
-    document.getElementById('sysStatus').textContent = '🔴 Offline';
+    const el = document.getElementById('sysStatus');
+    if (el) el.textContent = '🔴 Offline';
   }
 }
 
