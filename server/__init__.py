@@ -1,1 +1,1 @@
-"""Zen Agent server package."""
+"""Server module for Zen Agent FastAPI application."""

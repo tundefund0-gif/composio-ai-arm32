@@ -84,6 +84,7 @@ class LLMClient:
         if stream:
             return self._stream(body)
 
+        import random as _random
         last_err = None
         for attempt in range(retries + 1):
             try:
@@ -92,23 +93,26 @@ class LLMClient:
                 last_err = e
                 logger.warning("LLM call attempt %d/%d failed: %s", attempt + 1, retries + 1, e)
                 if attempt < retries:
-                    time.sleep(1.5 * (attempt + 1))
+                    delay = 1.0 * (2 ** attempt) + _random.uniform(0, 0.5)
+                    logger.info("Retrying in %.1fs...", delay)
+                    time.sleep(delay)
             except LLMError as e:
                 last_err = e
                 if not e.retryable:
-                    # Try fallback model if available before giving up
-                    if self.fallback_model and attempt >= retries:
-                        logger.info("Primary model failed, trying fallback: %s", self.fallback_model)
+                    logger.warning("Non-retryable error: %s", e)
+                    if self.fallback_model:
+                        logger.info("Trying fallback model: %s", self.fallback_model)
                         return self._fallback_chat(messages, temperature, tools, retries)
                     raise
                 logger.warning("LLM call attempt %d/%d failed: %s", attempt + 1, retries + 1, e)
                 if attempt < retries:
-                    delay = e.retry_after if e.retry_after is not None else 1.5 * (attempt + 1)
+                    delay = e.retry_after if e.retry_after is not None else 1.0 * (2 ** attempt) + _random.uniform(0, 0.5)
+                    logger.info("Retrying in %.1fs...", delay)
                     time.sleep(delay)
 
         # Try fallback after all retries exhausted
         if self.fallback_model:
-            logger.info("All retries exhausted, trying fallback model: %s", self.fallback_model)
+            logger.info("All retries exhausted (%d), trying fallback model: %s", retries + 1, self.fallback_model)
             return self._fallback_chat(messages, temperature, tools, retries)
         raise LLMError(f"LLM API failed after {retries + 1} attempts: {last_err}")
 

@@ -62,26 +62,6 @@ class Config:
     log_format: str = os.environ.get("LOG_FORMAT", "default")  # default or json
 
 
-def validate_config() -> list[str]:
-    """Validate configuration and return list of warnings."""
-    warnings = []
-    if not config.opencode_api_key:
-        warnings.append("OPENGATE_API_KEY is not set — LLM calls will fail")
-    if not config.composio_api_key:
-        warnings.append("COMPOSIO_API_KEY is not set — Composio tools will fail")
-    if config.max_tool_results_length < 1000:
-        warnings.append("MAX_TOOL_RESULTS_LENGTH is very low (< 1000)")
-    if config.max_history_messages < 5:
-        warnings.append("MAX_HISTORY_MESSAGES is very low (< 5)")
-    if config.port < 1 or config.port > 65535:
-        warnings.append("PORT is invalid (must be 1-65535)")
-    if config.rate_limit_per_minute < 1:
-        warnings.append("RATE_LIMIT_PER_MINUTE must be >= 1")
-    if config.max_message_length < 1000:
-        warnings.append("MAX_MESSAGE_LENGTH is very low (< 1000)")
-    if config.opencode_fallback_model and not config.opencode_fallback_api_key:
-        warnings.append("OPENGATE_FALLBACK_MODEL set but OPENGATE_FALLBACK_API_KEY is missing")
-
 config = Config()
 
 
@@ -89,9 +69,9 @@ def validate_config() -> list[str]:
     """Validate configuration and return list of warnings."""
     warnings = []
     if not config.opencode_api_key:
-        warnings.append("OPENGATE_API_KEY is not set - LLM calls will fail")
+        warnings.append("OPENGATE_API_KEY is not set — LLM calls will fail")
     if not config.composio_api_key:
-        warnings.append("COMPOSIO_API_KEY is not set - Composio tools will fail")
+        warnings.append("COMPOSIO_API_KEY is not set — Composio tools will fail")
     if config.max_tool_results_length < 1000:
         warnings.append("MAX_TOOL_RESULTS_LENGTH is very low (< 1000)")
     if config.max_history_messages < 5:

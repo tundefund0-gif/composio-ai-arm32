@@ -419,8 +419,14 @@ function connectWS() {
   ws.onclose = () => {
     updateStatus('Offline'); isStreaming = false;
     hideTyping();
-    if (reconAttempts < 5) { reconAttempts++; setTimeout(connectWS, 1500 * reconAttempts); }
-    else updateStatus('Disconnected');
+    if (reconAttempts < 5) {
+      reconAttempts++;
+      const delay = Math.min(1000 * reconAttempts + Math.random() * 500, 8000);
+      setTimeout(connectWS, delay);
+    } else {
+      updateStatus('Disconnected');
+      showToast('Connection lost. Refresh to reconnect.', 'error');
+    }
   };
   ws.onerror = () => updateStatus('Reconnecting...');
 }
@@ -443,7 +449,10 @@ function handleWS(d) {
 }
 
 function wsSend(msg) {
-  if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({message:msg})); return true; }
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify({message:msg})); return true; }
+    catch(e) { console.warn('WS send failed:', e); return false; }
+  }
   return false;
 }
 
@@ -598,13 +607,13 @@ function appendToken(text) {
 }
 
 function appendStatus(text) {
-  const out = document.getElementById('chatOutput');
+  const out = document.getElementById('messages');
   if (!out) return;
   const div = document.createElement('div');
   div.className = 'msg status';
   div.innerHTML = '<div class="status-badge">' + text.replace(/\n/g, '<br>') + '</div>';
   out.appendChild(div);
-  out.scrollTop = out.scrollHeight;
+  scrollToBottom(true);
 }
 
 function appendReasoning(text) {

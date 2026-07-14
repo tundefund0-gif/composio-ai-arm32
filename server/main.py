@@ -128,7 +128,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Zen Agent",
     description="AI agent with 23,790+ Composio tools via REST + WebSocket",
-    version="3.1.0",
+    version="3.2.0",
     lifespan=lifespan,
 )
 
@@ -169,8 +169,9 @@ if os.path.isdir(static_dir):
 async def health(request: Request):
     return {
         "status": "ok",
-        "version": "3.1.0",
+        "version": "3.2.0",
         "model": config.opencode_model,
+        "fallback_model": config.opencode_fallback_model or None,
         "composio": "connected",
         "agents_active": len(agents),
         "max_tokens": config.opencode_max_tokens,
@@ -307,17 +308,26 @@ async def ws_chat(websocket: WebSocket, user_id: str):
             full = ""
             try:
                 for token in agent.chat(msg, stream=True):
-                    if token.startswith("__reasoning__"):
-                        await websocket.send_json({"type": "reasoning", "content": token[13:]})
-                    elif token.startswith("__status__:"):
-                        await websocket.send_json({"type": "status", "content": token[11:]})
-                    else:
-                        full += token
-                        await websocket.send_json({"type": "token", "content": token})
+                    try:
+                        if token.startswith("__reasoning__"):
+                            await websocket.send_json({"type": "reasoning", "content": token[13:]})
+                        elif token.startswith("__status__:"):
+                            await websocket.send_json({"type": "status", "content": token[11:]})
+                        else:
+                            full += token
+                            await websocket.send_json({"type": "token", "content": token})
+                    except Exception as send_err:
+                        logger.warning("WS send failed (likely disconnected): %s", send_err)
+                        break
                 await websocket.send_json({"type": "done", "content": full})
+            except WebSocketDisconnect:
+                logger.info("WS disconnected during chat: %s", user_id)
             except Exception as e:
                 logger.exception("WS chat error for %s", user_id)
-                await websocket.send_json({"type": "error", "message": str(e)[:500]})
+                try:
+                    await websocket.send_json({"type": "error", "message": str(e)[:500]})
+                except Exception:
+                    pass
     except WebSocketDisconnect:
         logger.info("WS disconnected: %s", user_id)
     except Exception as e:
