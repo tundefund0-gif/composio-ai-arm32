@@ -162,19 +162,31 @@ class ZenAgent:
         logger.info("Created session %s", self.session_id)
 
     def _sysprompt(self) -> str:
-        return f"""You are Zen Agent, an AI assistant with access to 1,000+ tools via Composio.
+        return f"""You are Zen Agent, an AI assistant with access to 23,790+ tools via Composio.
 
-**Capabilities:**
-- Search and execute tools from 1,000+ apps (Gmail, GitHub, Slack, Notion, etc.)
-- Write and run Python code in a remote sandbox
-- Connect user accounts (OAuth) for any toolkit
-- Make direct HTTP requests through connected accounts
+**CRITICAL - You can ONLY call the 6 meta tools listed below.**
+You CANNOT call individual app tools directly (like GMAIL_*, GITHUB_*, SLACK_*, etc.).
+Those must be executed through COMPOSIO_MULTI_EXECUTE_TOOL.
+
+**Available Functions (only these 6):**
+1. COMPOSIO_SEARCH_TOOLS - Search for tools by use case description
+2. COMPOSIO_GET_TOOL_SCHEMAS - Get input/output schemas for specific tool slugs
+3. COMPOSIO_MANAGE_CONNECTIONS - Check or create OAuth connections for toolkits
+4. COMPOSIO_REMOTE_WORKBENCH - Execute Python code in remote sandbox
+5. COMPOSIO_REMOTE_BASH_TOOL - Run shell commands in remote sandbox
+6. COMPOSIO_MULTI_EXECUTE_TOOL - Execute multiple tools in parallel
 
 **Workflow:**
 1. Use COMPOSIO_SEARCH_TOOLS to find relevant tools for the user's request.
 2. Check connections with COMPOSIO_MANAGE_CONNECTIONS. If not active, show the user the auth link.
-3. Execute tools via COMPOSIO_MULTI_EXECUTE_TOOL.
+3. Execute tools via COMPOSIO_MULTI_EXECUTE_TOOL (pass tool_slug and arguments).
 4. For complex tasks, use COMPOSIO_REMOTE_WORKBENCH.
+
+**Example of executing a Gmail tool:**
+COMPOSIO_MULTI_EXECUTE_TOOL with tools=[{{"tool_slug": "GMAIL_LIST_LABELS", "arguments": {{"userId": "me"}}}}]
+
+**NEVER invent function names that are not listed above.**
+Only call the 6 functions listed above. If you need a tool not listed, use COMPOSIO_SEARCH_TOOLS first.
 
 Session: {self.session_id} | User: {self.user_id}
 Current UTC time: {datetime.now(timezone.utc).isoformat()}
@@ -396,7 +408,16 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
             return self._composio.execute_meta(self.session_id, action, args)
         except ComposioAPIError as e:
             logger.error("Tool %s failed: %s", action, e)
-            return {"error": str(e), "details": str(e.body)[:500] if e.body else None}
+            err_body = str(e.body)[:500] if e.body else ""
+            return {
+                "error": str(e),
+                "details": err_body,
+                "available_functions": ["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_GET_TOOL_SCHEMAS",
+                    "COMPOSIO_MANAGE_CONNECTIONS", "COMPOSIO_REMOTE_WORKBENCH",
+                    "COMPOSIO_REMOTE_BASH_TOOL", "COMPOSIO_MULTI_EXECUTE_TOOL"],
+                "hint": f"Tool '{action}' failed. If this is an app tool (like GMAIL_*), "
+                        f"you must execute it via COMPOSIO_MULTI_EXECUTE_TOOL with tool_slug='{action}'."
+            }
 
     def _build_msgs(self) -> List[Dict]:
         return [{"role": "system", "content": self._sysprompt()}, *self._messages]
