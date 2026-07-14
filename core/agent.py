@@ -366,65 +366,15 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
                         tool_calls_data = None
                 else:
                     full_content += token
-                    yield token
+                    # Strip DSML from each token before sending to client
+                    yield _strip_dsml_tags(token) or token
 
             if not tool_calls_data:
-                # Strip DSML/XML markup from streamed text if present
+                # Strip DSML/XML from streamed text and store clean version in history
                 cleaned = _strip_dsml_tags(full_content) if full_content else full_content
                 if cleaned != full_content:
                     logger.info("DSML: stripped from streamed response")
-                    self._messages.append({"role": "assistant", "content": cleaned or None})
-                    for tc in dsml_calls:
-                        try:
-                            args = json.loads(tc["function"]["arguments"])
-                        except json.JSONDecodeError:
-                            args = {}
-                        tool_calls_data.append({
-                            "id": tc["id"],
-                            "function": {
-                                "name": tc["function"]["name"],
-                                "arguments": tc["function"]["arguments"],
-                            },
-                        })
-                    # Continue to tool execution loop instead of breaking
-                    assistant_msg = {
-                        "role": "assistant",
-                        "content": _strip_dsml_tags(full_content) or None,
-                        "tool_calls": [],
-                    }
-                    for tc in dsml_calls:
-                        entry = {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["function"]["name"],
-                                "arguments": tc["function"]["arguments"],
-                            },
-                        }
-                        assistant_msg["tool_calls"].append(entry)
-                    msgs.append(assistant_msg)
-                    self._messages.append(assistant_msg)
-                    # Execute tools and loop
-                    for tc in tool_calls_data:
-                        fn = tc["function"]["name"]
-                        try:
-                            args = json.loads(tc["function"]["arguments"])
-                        except json.JSONDecodeError:
-                            args = {}
-                        result = self._exec_composio(fn, args)
-                        result_str = json.dumps(result, default=str)[:config.max_tool_results_length]
-                        tool_msg = {
-                            "role": "tool",
-                            "tool_call_id": tc.get("id", f"call_{abs(hash(str(tc))) % 10**6}"),
-                            "content": result_str,
-                        }
-                        msgs.append(tool_msg)
-                        self._messages.append(tool_msg)
-                    gen = self._llm.chat(msgs, stream=True, retries=1)
-                    if not isinstance(gen, Generator):
-                        break
-                    continue
-                self._messages.append({"role": "assistant", "content": full_content})
+                self._messages.append({"role": "assistant", "content": cleaned or full_content})
                 break
 
             # Execute tools and loop
