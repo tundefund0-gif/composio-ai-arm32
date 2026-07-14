@@ -19,14 +19,12 @@ logger = logging.getLogger("zen-agent")
 
 def _parse_dsml_tool_calls(text):
     """Parse DSML/XML formatted tool calls from model text output.
-    # Normalize Unicode look-alikes: fullwidth vertical line -> standard pipe
-    if text:
-        text = text.replace(chr(0xFF5C), chr(0x007C))
-    
     Handles formats like:
       <tool_calls><invoke name="TOOL">...</invoke></tool_calls>
       <||DSML||tool_calls>...</||DSML||tool_calls>
     """
+    if text:
+        text = text.replace(chr(0xFF5C), chr(0x007C))
     import re as _re
     if not text:
         return None
@@ -83,9 +81,9 @@ def _parse_dsml_tool_calls(text):
 
 
 def _strip_dsml_tags(text):
-    """Remove DSML/XML markup from text.
+    """Remove DSML/XML markup from text, keeping only natural language content."""
     if text:
-        text = text.replace(chr(0xFF5C), chr(0x007C)), keeping only natural language content."""
+        text = text.replace(chr(0xFF5C), chr(0x007C))
     import re as _re
     prefix = "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?"
     text = _re.sub(
