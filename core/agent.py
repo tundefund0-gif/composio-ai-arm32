@@ -21,7 +21,8 @@ def _parse_dsml_tool_calls(text):
     """Parse DSML/XML formatted tool calls from model text output.
     Handles formats like:
       <tool_calls><invoke name="TOOL">...</invoke></tool_calls>
-      <||DSML||tool_calls>...</||DSML||tool_calls>
+      <||DSML||tool_calls><||DSML||invoke name="TOOL">...</||DSML||invoke></||DSML||tool_calls>
+      <tool_call><function=NAME><parameter=KEY>VALUE</parameter></function></tool_call>
     """
     if text:
         text = text.replace(chr(0xFF5C), chr(0x007C))
@@ -29,42 +30,25 @@ def _parse_dsml_tool_calls(text):
     if not text:
         return None
     
-    # Match common patterns for tool call wrappers
-    # Pattern: <tool_calls>...</tool_calls> or <||DSML||tool_calls>...</||DSML||tool_calls>
-    outer = _re.search(
-        _re.compile(
-            "<" + "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?"
-            "tool_calls[^>]*>(.*?)</"
-            "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?tool_calls[^>]*>",
-            _re.DOTALL
-        ),
+    calls = []
+    
+    # --- Format 1: <tool_call><function=NAME><parameter=KEY>VALUE</parameter></function></tool_call> ---
+    # Match <tool_call>...</tool_call> blocks
+    tool_call_blocks = _re.findall(
+        _re.compile(r"<tool_call[^>]*>(.*?)</tool_call[^>]*>", _re.DOTALL),
         text
     )
-    inner = outer.group(1) if outer else text
-    
-    # Parse individual <invoke> tags
-    tag_re = _re.compile(
-        "<" + "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?"
-        "invoke" + chr(32) + "+name=" + chr(34) + "([a-zA-Z_]\\w*)" + chr(34)
-        + "[^>]*>(.*?)</"
-        + "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?invoke[^>]*>",
-        _re.DOTALL
-    )
-    invokes = tag_re.findall(inner)
-    if not invokes:
-        return None
-    
-    param_re = _re.compile(
-        "<" + "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?"
-        "parameter" + chr(32) + "+name=" + chr(34) + "([a-zA-Z_]\\w*)" + chr(34)
-        + "[^>]*>(.*?)</"
-        + "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?parameter[^>]*>",
-        _re.DOTALL
-    )
-    
-    calls = []
-    for name, body in invokes:
-        params = param_re.findall(body)
+    for block in tool_call_blocks:
+        # Extract function name from <function=NAME> or <function>NAME</function>
+        fn_match = _re.search(r"<function[=]?(.*?)>", block)
+        if not fn_match:
+            continue
+        fn_name = fn_match.group(1).strip()
+        # Extract parameters from <parameter=KEY>VALUE</parameter> or <parameter name="KEY">VALUE</parameter>
+        params = _re.findall(
+            _re.compile(r'<parameter(?:\s+name\s*=\s*"?|=)\s*([a-zA-Z_]\w*)"?\s*[^>]*>(.*?)</parameter[^>]*>', _re.DOTALL),
+            block
+        )
         args = {}
         for pname, pval in params:
             pval = pval.strip()
@@ -72,11 +56,58 @@ def _parse_dsml_tool_calls(text):
                 args[pname] = json.loads(pval)
             except Exception:
                 args[pname] = pval
-        calls.append({
-            "id": "call_" + str(abs(hash(name)) % 10**6),
-            "type": "function",
-            "function": {"name": name, "arguments": json.dumps(args)},
-        })
+        if fn_name:
+            calls.append({
+                "id": "call_" + str(abs(hash(fn_name)) % 10**6),
+                "type": "function",
+                "function": {"name": fn_name, "arguments": json.dumps(args)},
+            })
+    
+    # --- Format 2: DSML/XML <[||]tool_calls> with <[||]invoke> tags ---
+    if not calls:
+        outer = _re.search(
+            _re.compile(
+                "<" + "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?"
+                "tool_calls[^>]*>(.*?)</"
+                "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?tool_calls[^>]*>",
+                _re.DOTALL
+            ),
+            text
+        )
+        inner = outer.group(1) if outer else text
+        
+        # Parse individual <invoke> tags
+        tag_re = _re.compile(
+            "<" + "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?"
+            "invoke" + chr(32) + "+name=" + chr(34) + "([a-zA-Z_]\\w*)" + chr(34)
+            + "[^>]*>(.*?)</"
+            + "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?invoke[^>]*>",
+            _re.DOTALL
+        )
+        invokes = tag_re.findall(inner)
+        if invokes:
+            param_re = _re.compile(
+                "<" + "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?"
+                "parameter" + chr(32) + "+name=" + chr(34) + "([a-zA-Z_]\\w*)" + chr(34)
+                + "[^>]*>(.*?)</"
+                + "(?:[" + chr(124) + "][" + chr(124) + "]DSML[" + chr(124) + "][" + chr(124) + "])?parameter[^>]*>",
+                _re.DOTALL
+            )
+            for name, body in invokes:
+                params = param_re.findall(body)
+                args = {}
+                for pname, pval in params:
+                    pval = pval.strip()
+                    try:
+                        args[pname] = json.loads(pval)
+                    except Exception:
+                        args[pname] = pval
+                calls.append({
+                    "id": "call_" + str(abs(hash(name)) % 10**6),
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
+                })
+    
     return calls if calls else None
 
 
@@ -85,12 +116,20 @@ def _strip_dsml_tags(text):
     if text:
         text = text.replace(chr(0xFF5C), chr(0x007C))
     import re as _re
+    # Remove <tool_call>...</tool_call> blocks
+    text = _re.sub(_re.compile(r"<tool_call[^>]*>.*?</tool_call[^>]*>", _re.DOTALL), "", text)
+    # Remove <function[=...]>...</function> blocks
+    text = _re.sub(_re.compile(r"<function[^>]*>.*?</function[^>]*>", _re.DOTALL), "", text)
+    # Remove <parameter...>...</parameter> blocks (handles both <parameter=KEY> and <parameter name="KEY"> formats)
+    text = _re.sub(_re.compile(r'<parameter(?:\s+name\s*=\s*"?|=)\s*[a-zA-Z_]\w*"?\s*[^>]*>.*?</parameter[^>]*>', _re.DOTALL), "", text)
     # Match tags with optional pipe decoration: <||DSML||tool_calls||>, <||tool_calls>, <tool_calls>
-    _pipes = "[" + chr(124) + chr(0xFF5C) + "]*"  # zero or more pipe chars (standard or fullwidth)
-    _dsml = "(?:" + _pipes + "DSML" + _pipes + ")?"  # optional ||DSML|| prefix
+    _pipes = "[" + chr(124) + chr(0xFF5C) + "]*"
+    _dsml = "(?:" + _pipes + "DSML" + _pipes + ")?"
     _tag = lambda name: "<" + _pipes + _dsml + name + _pipes + "[^>]*>.*?</" + _pipes + _dsml + name + _pipes + "[^>]*>"
     text = _re.sub(_re.compile(_tag("tool_calls"), _re.DOTALL), "", text)
     text = _re.sub(_re.compile(_tag("invoke"), _re.DOTALL), "", text)
+    # Also clean up any standalone <function=NAME> tags without closing </function>
+    text = _re.sub(_re.compile(r'<function\s*=.*?>', _re.DOTALL), "", text)
     return text.strip()
 
 
