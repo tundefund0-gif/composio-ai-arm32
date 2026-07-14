@@ -133,6 +133,21 @@ def _strip_dsml_tags(text):
     return text.strip()
 
 
+def _normalize_text(text):
+    """Clean up common formatting issues: fix missing spaces, normalize whitespace."""
+    if not text:
+        return text
+    import re as _re
+    # Fix missing space after period that ends a sentence (word.word -> word. word)
+    # But NOT URLs (connect.composio.dev) or dots in the middle of abbreviations
+    text = _re.sub(r'(?<=[a-z])\.(?=[A-Z][a-z])', '. ', text)
+    # Fix missing space after comma
+    text = _re.sub(r',([a-zA-Z])', r', \1', text)
+    # Collapse multiple spaces
+    text = _re.sub(r' +', ' ', text)
+    return text.strip()
+
+
 META_TOOL_NAMES = {
     "COMPOSIO_SEARCH_TOOLS",
     "COMPOSIO_GET_TOOL_SCHEMAS",
@@ -359,6 +374,10 @@ Only call the 6 functions listed above. If you need a tool not listed, use COMPO
 - Do NOT output tags like <tool_calls>, <invoke>, <parameter>, ||DSML||, or similar markup.
 - If you output tool calls as text/XML/DSML instead of using function calling, the tools will NOT execute properly.
 - Always use the structured function_call format provided by the API.
+- **IMPORTANT for readability:** Use proper spacing between sentences and words. Do NOT run words together.
+- Use clean Markdown formatting: **bold** for emphasis, `code` for technical terms.
+- Present lists and tables with clear formatting and proper whitespace.
+- When showing results, use numbered lists or tables with clear headers.
 
 Session: {self.session_id} | User: {self.user_id}
 Current UTC time: {datetime.now(timezone.utc).isoformat()}
@@ -410,6 +429,10 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
             if cleaned != resp.content:
                 resp.message["content"] = cleaned or None
                 resp.content = cleaned or ""
+        # Normalize text formatting
+        if resp.content:
+            resp.content = _normalize_text(resp.content)
+            resp.message["content"] = resp.content
         self._messages.append({"role": "assistant", "content": resp.content})
         return resp
 
@@ -490,7 +513,7 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
                         fallback_parts.append(json.dumps(parsed, indent=2)[:3000] if isinstance(parsed, dict) else str(tr)[:3000])
                 except Exception:
                     fallback_parts.append(str(tr)[:3000])
-            fallback_content = "\n\n".join(fallback_parts) if fallback_parts else "Tool executed but the AI model could not generate a summary."
+            fallback_content = _normalize_text("\n\n".join(fallback_parts) if fallback_parts else "Tool executed, but the AI could not generate a summary.")
             final = LLMResponse({
                 "choices": [{"message": {"content": fallback_content}, "finish_reason": "stop"}],
                 "model": self._llm.model,
@@ -509,6 +532,10 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
             if cleaned != final.content:
                 final.message["content"] = cleaned or None
                 final.content = cleaned or ""
+        # Normalize text formatting
+        if final.content:
+            final.content = _normalize_text(final.content)
+            final.message["content"] = final.content
         self._messages.append({"role": "assistant", "content": final.content})
         return final
 
@@ -553,15 +580,17 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
                     ]
                     # Yield only the non-DSML prefix text if any, then status
                     cleaned = _strip_dsml_tags(full_content)
+                    cleaned = _normalize_text(cleaned)
                     if cleaned:
                         yield cleaned + "\n\n"
-                    yield "⚙️ Executing tool calls...\n"
+                    yield "__status__:⚙️ Executing tools..."
 
             # If no DSML and no tool calls, yield buffered content now
             if not dsml_found and not tool_calls_data:
-                for t in content_buffer:
-                    yield _strip_dsml_tags(t) or t
-                self._messages.append({"role": "assistant", "content": _strip_dsml_tags(full_content) or full_content})
+                cleaned = _strip_dsml_tags(full_content) or full_content
+                cleaned = _normalize_text(cleaned)
+                yield cleaned
+                self._messages.append({"role": "assistant", "content": cleaned})
                 break
 
             # If no DSML but we have proper tool_calls from API, yield content now

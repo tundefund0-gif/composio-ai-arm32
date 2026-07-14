@@ -110,6 +110,11 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',system-ui,sans-serif;b
 
 .cursor{display:inline-block;width:2px;height:1em;background:var(--accent);animation:blink 0.7s step-end infinite;vertical-align:text-bottom;margin-left:2px}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+/* Status messages */
+.msg.status{padding:4px 16px;text-align:center;display:flex;justify-content:center}
+.status-badge{display:inline-block;background:var(--accent-subtle);color:var(--accent);border:1px solid var(--accent);border-radius:20px;padding:4px 14px;font-size:0.75rem;font-weight:500;letter-spacing:0.01em;animation:fadeIn 0.3s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 .typing-indicator{display:flex;align-items:center;gap:4px;padding:10px 12px}
 .typing-dot{width:6px;height:6px;border-radius:50%;background:var(--text3);animation:tdot 1.2s ease-in-out infinite}
 .typing-dot:nth-child(2){animation-delay:0.2s}
@@ -429,6 +434,7 @@ function handleWS(d) {
       if(d.max_tokens) document.getElementById('sbTokens').textContent = (d.max_tokens/1000).toFixed(0)+'k';
       break;
     case 'token': appendToken(d.content); break;
+    case 'status': appendStatus(d.content); break;
     case 'reasoning': appendReasoning(d.content); break;
     case 'done': finishStream(d.content); break;
     case 'clear': clearChat(); break;
@@ -588,6 +594,16 @@ function appendToken(text) {
     aiMsgEl.innerHTML = renderMarkdown((aiMsgEl.textContent || '') + text) + '<span class="cursor"></span>';
     scrollToBottom();
   }
+}
+
+function appendStatus(text) {
+  const out = document.getElementById('chatOutput');
+  if (!out) return;
+  const div = document.createElement('div');
+  div.className = 'msg status';
+  div.innerHTML = '<div class="status-badge">' + text.replace(/\n/g, '<br>') + '</div>';
+  out.appendChild(div);
+  out.scrollTop = out.scrollHeight;
 }
 
 function appendReasoning(text) {

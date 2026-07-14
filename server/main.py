@@ -195,7 +195,7 @@ async def chat(req: ChatReq):
         _c = resp.content or ''
         _lg2.getLogger("zen-server").info("API content_len=%d", len(_c))
         _lg2.getLogger("zen-server").info("API content_repr=%s", repr(_c[:300]))
-        _lg2.getLogger("zen-server").info("API has_dsml=%s", str('<tool_calls>' in _c))
+        _lg2.getLogger("zen-server").info("API has_dsml=%s", str('<tool_calls>' in _c or '<tool_call>' in _c))
         return ChatResp(
             response=_c or "",
             reasoning=resp.reasoning[:3000] if resp.reasoning else "",
@@ -309,6 +309,8 @@ async def ws_chat(websocket: WebSocket, user_id: str):
                 for token in agent.chat(msg, stream=True):
                     if token.startswith("__reasoning__"):
                         await websocket.send_json({"type": "reasoning", "content": token[13:]})
+                    elif token.startswith("__status__:"):
+                        await websocket.send_json({"type": "status", "content": token[11:]})
                     else:
                         full += token
                         await websocket.send_json({"type": "token", "content": token})
