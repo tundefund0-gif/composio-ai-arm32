@@ -94,6 +94,49 @@ def _strip_dsml_tags(text):
     return text.strip()
 
 
+META_TOOL_NAMES = {
+    "COMPOSIO_SEARCH_TOOLS",
+    "COMPOSIO_GET_TOOL_SCHEMAS",
+    "COMPOSIO_MANAGE_CONNECTIONS",
+    "COMPOSIO_REMOTE_WORKBENCH",
+    "COMPOSIO_REMOTE_BASH_TOOL",
+    "COMPOSIO_MULTI_EXECUTE_TOOL",
+}
+
+
+def _normalize_tool_calls(calls):
+    """Normalize parsed tool calls: wrap non-meta tools into COMPOSIO_MULTI_EXECUTE_TOOL."""
+    if not calls:
+        return calls
+    normalized = []
+    for tc in calls:
+        fn_name = tc["function"]["name"]
+        if fn_name in META_TOOL_NAMES:
+            normalized.append(tc)
+        else:
+            # Model output a raw Composio tool slug (e.g. GITHUB_LIST_REPOSITORIES...)
+            # Route it through COMPOSIO_MULTI_EXECUTE_TOOL
+            try:
+                args = json.loads(tc["function"]["arguments"])
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            # If args already has "tools" array, use it; otherwise wrap the tool
+            if "tools" in args and isinstance(args["tools"], list):
+                tools_payload = args["tools"]
+            else:
+                tools_payload = [{"tool_slug": fn_name, "arguments": args}]
+            normalized.append({
+                "id": tc["id"],
+                "type": "function",
+                "function": {
+                    "name": "COMPOSIO_MULTI_EXECUTE_TOOL",
+                    "arguments": json.dumps({"tools": tools_payload}),
+                },
+            })
+            logger.info("Routing non-meta tool %s -> COMPOSIO_MULTI_EXECUTE_TOOL", fn_name)
+    return normalized
+
+
 META_TOOL_DEFS = [
     {
         "type": "function",
@@ -267,6 +310,12 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools=[{{"tool_slug": "GMAIL_LIST_LABELS", "arg
 **NEVER invent function names that are not listed above.**
 Only call the 6 functions listed above. If you need a tool not listed, use COMPOSIO_SEARCH_TOOLS first.
 
+**CRITICAL FORMATTING RULES:**
+- Use ONLY the native function calling protocol. Do NOT write tool calls as XML, DSML, or any markup format.
+- Do NOT output tags like <tool_calls>, <invoke>, <parameter>, ||DSML||, or similar markup.
+- If you output tool calls as text/XML/DSML instead of using function calling, the tools will NOT execute properly.
+- Always use the structured function_call format provided by the API.
+
 Session: {self.session_id} | User: {self.user_id}
 Current UTC time: {datetime.now(timezone.utc).isoformat()}
 """
@@ -304,11 +353,17 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
         resp = self._llm.chat(msgs, tools=META_TOOL_DEFS, retries=2)
         if resp.tool_calls:
             return self._handle_tools(resp, msgs)
-        # Strip DSML/XML markup from response text (model may include it)
+        # Model may output tool calls as DSML text instead of proper tool_calls
+        dsml_calls = _parse_dsml_tool_calls(resp.content) if resp.content else None
+        if dsml_calls:
+            logger.info("DSML: found %d tool calls in text, executing", len(dsml_calls))
+            resp.tool_calls = _normalize_tool_calls(dsml_calls)
+            resp.message["content"] = _strip_dsml_tags(resp.content) or None
+            return self._handle_tools(resp, msgs)
+        # Strip any DSML/XML markup from response text
         if resp.content:
             cleaned = _strip_dsml_tags(resp.content)
             if cleaned != resp.content:
-                logger.info("DSML: stripped from initial response")
                 resp.message["content"] = cleaned or None
                 resp.content = cleaned or ""
         self._messages.append({"role": "assistant", "content": resp.content})
@@ -320,25 +375,56 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
             final = resp
             self._messages.append({"role": "assistant", "content": final.content or ""})
             return final
-        msgs.append(resp.message)
-        self._messages.append(resp.message)
+        # Build assistant message for context — strip DSML tool_calls, use clean format
+        assistant_entry = {
+            "role": "assistant",
+            "content": resp.content or None,
+            "tool_calls": [
+                {"id": tc["id"], "type": "function", "function": tc["function"]}
+                for tc in (resp.tool_calls or [])
+            ] or None,
+        }
+        msgs.append(assistant_entry)
+        self._messages.append(assistant_entry)
+        # Execute each tool call
+        tool_results_text = []
         for tc in resp.tool_calls or []:
             fn = tc["function"]["name"]
             try:
                 args = json.loads(tc["function"]["arguments"])
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
                 args = {}
             result = self._exec_composio(fn, args)
             result_str = json.dumps(result, default=str)[:config.max_tool_results_length]
+            logger.info("Tool %s result (depth=%d): %d chars, has_error=%s", fn, _depth, len(result_str), "error" in result)
             tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": result_str}
             msgs.append(tool_msg)
             self._messages.append(tool_msg)
-        final = self._llm.chat(msgs, retries=1)
-        # Clean DSML/XML markup from final response (model may include it as text)
+            tool_results_text.append(result_str)
+        # Call LLM with tool results in context
+        logger.info("Follow-up LLM call: depth=%d, msgs=%d", _depth, len(msgs))
+        try:
+            final = self._llm.chat(msgs, retries=2)
+        except LLMError as e:
+            logger.warning("Follow-up LLM call failed (depth=%d): %s", _depth, e)
+            # Build a readable fallback from actual tool results
+            fallback_content = "\n\n".join(tool_results_text) if tool_results_text else "Tool executed but the AI model could not generate a summary."
+            final = LLMResponse({
+                "choices": [{"message": {"content": fallback_content}, "finish_reason": "stop"}],
+                "model": self._llm.model,
+            })
+        # Model may output tool calls as DSML text in the follow-up response
+        dsml_calls = _parse_dsml_tool_calls(final.content) if final.content else None
+        if dsml_calls:
+            logger.info("DSML: found %d tool calls in follow-up text (depth=%d)", len(dsml_calls), _depth)
+            final.tool_calls = _normalize_tool_calls(dsml_calls)
+            final.message["content"] = _strip_dsml_tags(final.content) or None
+            final.content = final.message["content"] or ""
+            return self._handle_tools(final, msgs, _depth + 1)
+        # Clean any remaining DSML/XML markup
         if final.content:
             cleaned = _strip_dsml_tags(final.content)
             if cleaned != final.content:
-                logger.info("DSML: stripped tags from response (depth=%d)", _depth)
                 final.message["content"] = cleaned or None
                 final.content = cleaned or ""
         self._messages.append({"role": "assistant", "content": final.content})
@@ -352,6 +438,7 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
         if not isinstance(gen, Generator):
             return
 
+        depth = 0
         while True:
             full_content = ""
             tool_calls_data = None
@@ -366,15 +453,23 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
                         tool_calls_data = None
                 else:
                     full_content += token
-                    # Strip DSML from each token before sending to client
                     yield _strip_dsml_tags(token) or token
 
+            # Check for DSML tool calls in text (model may output them as text)
+            if not tool_calls_data and full_content:
+                dsml_calls = _parse_dsml_tool_calls(full_content)
+                if dsml_calls:
+                    logger.info("DSML: found %d tool calls in streamed text (depth=%d)", len(dsml_calls), depth)
+                    dsml_calls = _normalize_tool_calls(dsml_calls)
+                    tool_calls_data = [
+                        {"id": c["id"], "function": c["function"]}
+                        for c in dsml_calls
+                    ]
+                    # Yield a status so user sees something happened
+                    yield "\n\n⚙️ Executing tool calls...\n"
+
             if not tool_calls_data:
-                # Strip DSML/XML from streamed text and store clean version in history
-                cleaned = _strip_dsml_tags(full_content) if full_content else full_content
-                if cleaned != full_content:
-                    logger.info("DSML: stripped from streamed response")
-                self._messages.append({"role": "assistant", "content": cleaned or full_content})
+                self._messages.append({"role": "assistant", "content": _strip_dsml_tags(full_content) or full_content})
                 break
 
             # Execute tools and loop
@@ -413,6 +508,11 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
                 }
                 msgs.append(tool_msg)
                 self._messages.append(tool_msg)
+
+            depth += 1
+            if depth > 5:
+                logger.warning("Streaming tool call depth exceeded")
+                break
 
             gen = self._llm.chat(msgs, stream=True, retries=1)
             if not isinstance(gen, Generator):
