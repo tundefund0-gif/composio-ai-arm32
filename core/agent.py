@@ -486,6 +486,8 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
             full_content = ""
             tool_calls_data = None
 
+            # Buffer content tokens — don't yield yet, DSML tags span multiple tokens
+            content_buffer = []
             for token in gen:
                 if token.startswith("__reasoning__"):
                     yield token
@@ -496,24 +498,39 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
                         tool_calls_data = None
                 else:
                     full_content += token
-                    yield _strip_dsml_tags(token) or token
+                    content_buffer.append(token)
 
-            # Check for DSML tool calls in text (model may output them as text)
+            # Check for DSML tool calls in buffered text
+            dsml_found = False
             if not tool_calls_data and full_content:
                 dsml_calls = _parse_dsml_tool_calls(full_content)
                 if dsml_calls:
+                    dsml_found = True
                     logger.info("DSML: found %d tool calls in streamed text (depth=%d)", len(dsml_calls), depth)
                     dsml_calls = _normalize_tool_calls(dsml_calls)
                     tool_calls_data = [
                         {"id": c["id"], "function": c["function"]}
                         for c in dsml_calls
                     ]
-                    # Yield a status so user sees something happened
-                    yield "\n\n⚙️ Executing tool calls...\n"
+                    # Yield only the non-DSML prefix text if any, then status
+                    cleaned = _strip_dsml_tags(full_content)
+                    if cleaned:
+                        yield cleaned + "\n\n"
+                    yield "⚙️ Executing tool calls...\n"
 
-            if not tool_calls_data:
+            # If no DSML and no tool calls, yield buffered content now
+            if not dsml_found and not tool_calls_data:
+                for t in content_buffer:
+                    yield _strip_dsml_tags(t) or t
                 self._messages.append({"role": "assistant", "content": _strip_dsml_tags(full_content) or full_content})
                 break
+
+            # If no DSML but we have proper tool_calls from API, yield content now
+            if not dsml_found and tool_calls_data:
+                for t in content_buffer:
+                    cleaned_t = _strip_dsml_tags(t)
+                    if cleaned_t:
+                        yield cleaned_t
 
             # Execute tools and loop
             assistant_msg = {
