@@ -309,14 +309,13 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
         resp = self._llm.chat(msgs, tools=META_TOOL_DEFS, retries=2)
         if resp.tool_calls:
             return self._handle_tools(resp, msgs)
-        # Check for DSML/XML tool calls in text content (model may output them as text)
-        dsml_calls = _parse_dsml_tool_calls(resp.content) if resp.content else None
-        if dsml_calls:
-            logger.info("DSML fallback: parsed %d tool calls from text", len(dsml_calls))
-            resp.tool_calls = dsml_calls
-            resp.message["content"] = _strip_dsml_tags(resp.content) or None
-            resp.content = resp.message["content"] or ""
-            return self._handle_tools(resp, msgs)
+        # Strip DSML/XML markup from response text (model may include it)
+        if resp.content:
+            cleaned = _strip_dsml_tags(resp.content)
+            if cleaned != resp.content:
+                logger.info("DSML: stripped from initial response")
+                resp.message["content"] = cleaned or None
+                resp.content = cleaned or ""
         self._messages.append({"role": "assistant", "content": resp.content})
         return resp
 
@@ -340,15 +339,13 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
             msgs.append(tool_msg)
             self._messages.append(tool_msg)
         final = self._llm.chat(msgs, retries=1)
-        # Check if final response has DSML/XML tool calls (model outputs them as text)
-        dsml_calls = _parse_dsml_tool_calls(final.content) if not final.tool_calls and final.content else None
-        if dsml_calls:
-            logger.info("DSML: executing %d tools from text (depth=%d)", len(dsml_calls), _depth)
-            final.tool_calls = dsml_calls
-            final.message["content"] = _strip_dsml_tags(final.content) or None
-            final.content = final.message["content"] or ""
-            msgs.append(final.message)
-            return self._handle_tools(final, msgs, _depth + 1)
+        # Clean DSML/XML markup from final response (model may include it as text)
+        if final.content:
+            cleaned = _strip_dsml_tags(final.content)
+            if cleaned != final.content:
+                logger.info("DSML: stripped tags from response (depth=%d)", _depth)
+                final.message["content"] = cleaned or None
+                final.content = cleaned or ""
         self._messages.append({"role": "assistant", "content": final.content})
         return final
 
@@ -377,13 +374,11 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
                     yield token
 
             if not tool_calls_data:
-                # Check for DSML/XML tool calls in streamed text content
-                dsml_calls = _parse_dsml_tool_calls(full_content) if full_content else None
-                if dsml_calls:
-                    logger.info("Stream: parsed %d DSML tool calls from text", len(dsml_calls))
-                    self._messages.append({"role": "assistant", "content": _strip_dsml_tags(full_content) or None})
-                    # Convert dsml_calls to the format expected by the tool loop
-                    tool_calls_data = []
+                # Strip DSML/XML markup from streamed text if present
+                cleaned = _strip_dsml_tags(full_content) if full_content else full_content
+                if cleaned != full_content:
+                    logger.info("DSML: stripped from streamed response")
+                    self._messages.append({"role": "assistant", "content": cleaned or None})
                     for tc in dsml_calls:
                         try:
                             args = json.loads(tc["function"]["arguments"])
