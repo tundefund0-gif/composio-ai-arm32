@@ -449,7 +449,7 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools=[{{"tool_slug": "GITHUB_LIST_REPOSITORIES
         return resp
 
     def _handle_tools(self, resp: LLMResponse, msgs: List[Dict], _depth: int = 0) -> LLMResponse:
-        if _depth > 12:
+        if _depth > 100:
             logger.warning("Tool call depth exceeded (limit 12), generating summary")
             # Do a final non-streaming call asking for summary
             summary_msgs = [msgs[0], {"role": "user", "content": "Summarize what was accomplished so far based on the tool results. Be concise."}]
@@ -666,8 +666,8 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools=[{{"tool_slug": "GITHUB_LIST_REPOSITORIES
                 self._messages.append(tool_msg)
 
             depth += 1
-            if depth > 12:
-                logger.warning("Streaming tool call depth exceeded (limit 12)")
+            if depth > 100:
+                logger.warning("Streaming tool call depth exceeded (limit 100)")
                 # Use tool results for a final summary instead of breaking with error
                 summary_msgs = [msgs[0], {"role": "user", "content": "Summarize what was accomplished so far based on the tool results. Be concise."}]
                 # Add last few tool results for context

@@ -505,8 +505,8 @@ async function startNewChat() {
   chatMessages = [];
   renderMessages([]);
   localStorage.setItem('za-activeChat', currentChatId);
-  await loadChatList();
   saveChats();
+  await loadChatList();
   closeSidebar();
 }
 
