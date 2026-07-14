@@ -519,6 +519,7 @@ function deleteChat(id, e) {
 function renderMessages(msgs) {
   const el = document.getElementById('messages');
   if (!msgs || !msgs.length) {
+    el.innerHTML = '';
     el.style.display = 'none';
     document.getElementById('welcomeScreen').style.display = 'flex';
     return;
@@ -734,15 +735,7 @@ async function sendRestMessage(text) {
       document.getElementById('sysSession').textContent = d.session_id;
     }
     hideTyping();
-    if (d.response) {
-      appendMessage({ role: 'assistant', content: d.response });
-      chatMessages.push({ role: 'assistant', content: d.response });
-      if (currentChatId && chats[currentChatId]) {
-        chats[currentChatId].messages = chatMessages.slice();
-        chats[currentChatId].updatedAt = new Date().toISOString();
-        saveChats(); loadChatList();
-      }
-    }
+    if (d.response) appendMessage({ role: 'assistant', content: d.response });
     finishStream(d.response || null);
   } catch(e) { showToast('Request failed: ' + e.message, 'error'); hideTyping(); finishStream(null); }
 }
