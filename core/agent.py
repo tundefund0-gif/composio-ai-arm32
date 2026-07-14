@@ -304,8 +304,13 @@ Those must be executed through COMPOSIO_MULTI_EXECUTE_TOOL.
 3. Execute tools via COMPOSIO_MULTI_EXECUTE_TOOL (pass tool_slug and arguments).
 4. For complex tasks, use COMPOSIO_REMOTE_WORKBENCH.
 
-**Example of executing a Gmail tool:**
-COMPOSIO_MULTI_EXECUTE_TOOL with tools=[{{"tool_slug": "GMAIL_LIST_LABELS", "arguments": {{"userId": "me"}}}}]
+**IMPORTANT — Required Parameters:**
+- COMPOSIO_MANAGE_CONNECTIONS always requires "toolkits" (array of toolkit names like ["github", "gmail"]).
+- COMPOSIO_SEARCH_TOOLS always requires "queries" (array of objects with "use_case").
+- COMPOSIO_MULTI_EXECUTE_TOOL always requires "tools" (array of objects with "tool_slug").
+
+**Example of executing a GitHub tool:**
+COMPOSIO_MULTI_EXECUTE_TOOL with tools=[{{"tool_slug": "GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER", "arguments": {{"per_page": 2}}}}]
 
 **NEVER invent function names that are not listed above.**
 Only call the 6 functions listed above. If you need a tool not listed, use COMPOSIO_SEARCH_TOOLS first.
@@ -378,7 +383,7 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
         # Build assistant message for context — strip DSML tool_calls, use clean format
         assistant_entry = {
             "role": "assistant",
-            "content": resp.content or None,
+            "content": resp.content or "",
             "tool_calls": [
                 {"id": tc["id"], "type": "function", "function": tc["function"]}
                 for tc in (resp.tool_calls or [])
@@ -395,20 +400,58 @@ Current UTC time: {datetime.now(timezone.utc).isoformat()}
             except (json.JSONDecodeError, TypeError):
                 args = {}
             result = self._exec_composio(fn, args)
-            result_str = json.dumps(result, default=str)[:config.max_tool_results_length]
+            result_str = json.dumps(result, default=str)[:min(config.max_tool_results_length, 8000)]
             logger.info("Tool %s result (depth=%d): %d chars, has_error=%s", fn, _depth, len(result_str), "error" in result)
             tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": result_str}
             msgs.append(tool_msg)
             self._messages.append(tool_msg)
             tool_results_text.append(result_str)
         # Call LLM with tool results in context
+        msgs = _truncate_msgs(msgs, config.max_history_messages)
         logger.info("Follow-up LLM call: depth=%d, msgs=%d", _depth, len(msgs))
+        final = None
         try:
             final = self._llm.chat(msgs, retries=2)
         except LLMError as e:
-            logger.warning("Follow-up LLM call failed (depth=%d): %s", _depth, e)
+            logger.warning("Follow-up LLM call failed (depth=%d, attempt 1): %s", _depth, e)
+            # Retry with simplified context: system + user + last tool results only
+            try:
+                simplified = [msgs[0]]  # system prompt
+                for m in msgs:
+                    if m.get("role") == "user":
+                        simplified.append(m)
+                        break
+                for m in msgs:
+                    if m.get("role") == "tool":
+                        simplified.append(m)
+                logger.info("Retry with simplified context: %d msgs", len(simplified))
+                final = self._llm.chat(simplified, retries=1)
+            except LLMError as e2:
+                logger.warning("Simplified retry also failed (depth=%d): %s", _depth, e2)
+        if final is None:
             # Build a readable fallback from actual tool results
-            fallback_content = "\n\n".join(tool_results_text) if tool_results_text else "Tool executed but the AI model could not generate a summary."
+            fallback_parts = []
+            for tr in tool_results_text:
+                try:
+                    parsed = json.loads(tr)
+                    err = None
+                    if isinstance(parsed, dict):
+                        err = parsed.get("error") or parsed.get("details")
+                        if not err and "data" in parsed and isinstance(parsed["data"], dict):
+                            err = parsed["data"].get("error")
+                    if err:
+                        fallback_parts.append("⚠️ " + str(err)[:500])
+                    elif isinstance(parsed, dict) and parsed.get("data"):
+                        result_data = parsed["data"]
+                        if isinstance(result_data, dict) and result_data:
+                            fallback_parts.append(json.dumps(result_data, indent=2)[:3000])
+                        else:
+                            fallback_parts.append("Tool executed successfully but returned no data.")
+                    else:
+                        fallback_parts.append(json.dumps(parsed, indent=2)[:3000] if isinstance(parsed, dict) else str(tr)[:3000])
+                except Exception:
+                    fallback_parts.append(str(tr)[:3000])
+            fallback_content = "\n\n".join(fallback_parts) if fallback_parts else "Tool executed but the AI model could not generate a summary."
             final = LLMResponse({
                 "choices": [{"message": {"content": fallback_content}, "finish_reason": "stop"}],
                 "model": self._llm.model,
