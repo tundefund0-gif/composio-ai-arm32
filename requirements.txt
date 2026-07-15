@@ -1,15 +1,31 @@
-# Zen Agent — Dependencies
+# Zen Agent ARM32 — Dependencies (ARMv7 compatible)
 # Install: pip install -r requirements.txt
 
+# Core HTTP (pure Python)
 httpx>=0.28.0
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
+
+# Web framework - use FastAPI 0.99.x for pydantic v1 compatibility
+fastapi>=0.100.0,<1.0.0
+
+# ASGI server - without [standard] to skip watchfiles (Rust dep)
+uvicorn>=0.30.0
+
+# CLI (pure Python)
 typer>=0.12.0
-pydantic>=2.0.0
+
+# Data validation - pydantic v1 is pure Python (no Rust pydantic-core needed)
+# v2 requires pydantic-core which needs Rust to compile on ARMv7
+pydantic>=1.10.0,<2
+
+# WebSocket (v16+ is pure Python)
 websockets>=12.0
+
+# Multipart (pure Python)
 python-multipart>=0.0.9
+
+# Async file ops (pure Python)
 aiofiles>=24.0.0
 
-# Testing (optional)
+# Testing (optional, all pure Python)
 pytest>=8.0.0
 pytest-asyncio>=0.24.0

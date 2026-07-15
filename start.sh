@@ -32,7 +32,7 @@ echo ""
 # ─── Install deps if missing ────────────────────────────────────
 if ! python3 -c "import fastapi" 2>/dev/null; then
     echo "📦 Installing dependencies..."
-    pip install -r requirements.txt -q
+    pip install -r requirements-armv7.txt -q
 fi
 
 # ─── Start server ───────────────────────────────────────────────

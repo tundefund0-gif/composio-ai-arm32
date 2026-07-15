@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Zen Agent",
     description="AI agent with 23,790+ Composio tools via REST + WebSocket",
-    version="3.3.0",
+    version="3.3.0-arm32",
     lifespan=lifespan,
 )
 
@@ -170,7 +170,7 @@ if os.path.isdir(static_dir):
 async def health(request: Request):
     return {
         "status": "ok",
-        "version": "3.3.0",
+        "version": "3.3.0-arm32",
         "model": config.opencode_model,
         "fallback_model": config.opencode_fallback_model or None,
         "composio": "connected",
@@ -277,7 +277,7 @@ async def search_tools(query: str, user_id: str = "web-user"):
 @app.get("/api/config")
 async def get_config():
     return {
-        "version": "3.3.0",
+        "version": "3.3.0-arm32",
         "model": config.opencode_model,
         "fallback_model": config.opencode_fallback_model or None,
         "max_tokens": config.opencode_max_tokens,

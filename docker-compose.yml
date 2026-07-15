@@ -2,6 +2,7 @@
 version: "3.9"
 
 services:
+  # Built for ARMv7 - use linux/arm/v7 platform
   zen-agent:
     build: .
     container_name: zen-agent

@@ -1,6 +1,6 @@
-# 🤖 Zen Agent
+# 🤖 Zen Agent ARM32
 
-An AI agent with access to **23,790+ tools** via Composio, powered by OpenCode AI API.
+An **ARMv7/ARM32** compatible AI agent with access to **23,790+ tools** via Composio, powered by OpenCode AI API.
 
 ## ✨ Features
 
@@ -19,6 +19,21 @@ An AI agent with access to **23,790+ tools** via Composio, powered by OpenCode A
 - **⚙️ Config Validation** — Startup warnings for missing or misconfigured settings
 - **🛡️ Graceful Shutdown** — Clean session cleanup on server stop
 
+
+
+## 🏗 ARMv7/ARM32 Compatibility
+
+This fork is specially configured for **ARMv7 (32-bit ARM)** devices like:
+- Raspberry Pi 2/3/4 (32-bit OS)
+- Android phones with Termux
+- ARM32 embedded Linux devices
+
+### Key Changes from Main Branch
+- **pydantic v1** (pure Python, no Rust `pydantic-core` needed)
+- **FastAPI <1.0.0** (compatible with pydantic v1)
+- **uvicorn without `[standard]`** (avoids `watchfiles` Rust dependency)
+- **websockets v12+** (pure Python)
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -30,7 +45,8 @@ An AI agent with access to **23,790+ tools** via Composio, powered by OpenCode A
 ```bash
 git clone https://github.com/tundefund0-gif/composio-ai-agent.git
 cd composio-ai-agent
-pip install -r requirements.txt
+pip install -r requirements-armv7.txt  # ARMv7 optimized
+# OR: pip install -r requirements.txt
 ```
 
 ### 2. Set API Keys
@@ -74,7 +90,9 @@ python3 -m cli.main config
 
 ### 5. Docker Deployment
 ```bash
-docker compose up -d
+# ARMv7 builds are available as linux/arm/v7
+# Build locally:
+docker buildx build --platform linux/arm/v7 -t zen-agent-arm32 .
 ```
 
 ## 🖥️ CLI Commands
@@ -212,7 +230,9 @@ All configuration is via environment variables or `.env` file:
 ### Docker
 ```bash
 # Build and run
-docker compose up -d
+# ARMv7 builds are available as linux/arm/v7
+# Build locally:
+docker buildx build --platform linux/arm/v7 -t zen-agent-arm32 .
 
 # Check logs
 docker compose logs -f
