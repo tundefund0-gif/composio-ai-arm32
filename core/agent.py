@@ -441,8 +441,8 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
         return resp
 
     def _handle_tools(self, resp: LLMResponse, msgs: List[Dict], _depth: int = 0) -> LLMResponse:
-        if _depth > 100:
-            logger.warning("Tool call depth exceeded (limit 100), generating summary")
+        if _depth > 8:
+            logger.warning("Tool call depth exceeded (limit 8), generating summary")
             # Do a final non-streaming call asking for summary
             summary_msgs = [msgs[0], {"role": "user", "content": "Summarize what was accomplished so far based on the tool results. Be concise."}]
             tool_count = 0
@@ -452,15 +452,16 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
                     tool_count += 1
             try:
                 final = self._llm.chat(summary_msgs, retries=1)
-                if final.content:
+                if final and final.content:
                     cleaned = _normalize_text(_strip_dsml_tags(final.content))
                     final.message["content"] = cleaned
                     final.content = cleaned
                     final.tool_calls = None
+                else:
+                    final = LLMResponse({"choices": [{"message": {"content": "The tools have been executed. The results are shown above."}}], "model": self._llm.model})
             except Exception:
-                # Fallback: use accumulated content
-                pass
-            self._messages.append({"role": "assistant", "content": final.content or "I completed the requested operations."})
+                final = LLMResponse({"choices": [{"message": {"content": "I completed the requested operations. The results have been processed."}}], "model": self._llm.model})
+            self._messages.append({"role": "assistant", "content": final.content or ""})
             return final
         # Build assistant message for context — strip DSML tool_calls, use clean format
         assistant_entry = {
@@ -580,6 +581,8 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
                 elif token.startswith("__tool_calls__:"):
                     try:
                         tool_calls_data = json.loads(token[len("__tool_calls__:"):])
+                        tc_names = [tc.get("function", {}).get("name", "?") for tc in tool_calls_data]
+                        logger.info("Stream: received __tool_calls__ with %d calls: %s", len(tool_calls_data), tc_names)
                     except json.JSONDecodeError:
                         tool_calls_data = None
                 else:
@@ -592,7 +595,9 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
                 dsml_calls = _parse_dsml_tool_calls(full_content)
                 if dsml_calls:
                     dsml_found = True
-                    logger.info("DSML: found %d tool calls in streamed text (depth=%d)", len(dsml_calls), depth)
+                    tool_names = [c["function"]["name"] for c in dsml_calls]
+                    logger.info("DSML: found %d tool calls in streamed text (depth=%d): %s", len(dsml_calls), depth, tool_names)
+                    logger.debug("DSML raw text (first 300): %s", full_content[:300])
                     dsml_calls = _normalize_tool_calls(dsml_calls)
                     tool_calls_data = [
                         {"id": c["id"], "function": c["function"]}
@@ -660,8 +665,8 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
                 self._messages.append(tool_msg)
 
             depth += 1
-            if depth > 100:
-                logger.warning("Streaming tool call depth exceeded (limit 100)")
+            if depth > 8:
+                logger.warning("Streaming tool call depth exceeded (limit 8)")
                 # Use tool results for a final summary instead of breaking with error
                 summary_msgs = [msgs[0], {"role": "user", "content": "Summarize what was accomplished so far based on the tool results. Be concise."}]
                 # Add last few tool results for context

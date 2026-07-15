@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Zen Agent",
     description="AI agent with 23,790+ Composio tools via REST + WebSocket",
-    version="3.3.0-arm32",
+    version="3.3.0",
     lifespan=lifespan,
 )
 
@@ -170,7 +170,7 @@ if os.path.isdir(static_dir):
 async def health(request: Request):
     return {
         "status": "ok",
-        "version": "3.3.0-arm32",
+        "version": "3.3.0",
         "model": config.opencode_model,
         "fallback_model": config.opencode_fallback_model or None,
         "composio": "connected",
@@ -277,7 +277,7 @@ async def search_tools(query: str, user_id: str = "web-user"):
 @app.get("/api/config")
 async def get_config():
     return {
-        "version": "3.3.0-arm32",
+        "version": "3.3.0",
         "model": config.opencode_model,
         "fallback_model": config.opencode_fallback_model or None,
         "max_tokens": config.opencode_max_tokens,
@@ -317,19 +317,13 @@ async def ws_chat(websocket: WebSocket, user_id: str):
                 continue
             if msg.strip().lower() == "/clear":
                 agent.clear_history()
-                try:
-                    await websocket.send_json({"type": "clear"})
-                except Exception:
-                    pass
+                await websocket.send_json({"type": "clear"})
                 continue
             if msg.strip().lower() == "/ping":
                 # Silently ignore - ping is just to keep connection alive
                 continue
             if len(msg) > config.max_message_length:
-                try:
-                    await websocket.send_json({"type": "error", "message": f"Message too long (max {config.max_message_length:,} chars)"})
-                except Exception:
-                    pass
+                await websocket.send_json({"type": "error", "message": f"Message too long (max {config.max_message_length:,} chars)"})
                 continue
             # Run blocking agent.chat in a thread to avoid blocking event loop
             loop = asyncio.get_running_loop()
@@ -347,16 +341,12 @@ async def ws_chat(websocket: WebSocket, user_id: str):
                     stream_error = e
                     return []
             
-            chat_tokens = await loop.run_in_executor(None, _run_chat)
+            chat_tokens = await asyncio.wait_for(loop.run_in_executor(None, _run_chat), timeout=120)
             
             if stream_error:
                 logger.exception("WS chat error for %s", user_id)
                 try:
                     await websocket.send_json({"type": "error", "message": str(stream_error)[:500]})
-                except Exception:
-                    pass
-                try:
-                    await websocket.send_json({"type": "done", "content": "", "tokens": 0})
                 except Exception:
                     pass
                 continue
@@ -373,7 +363,6 @@ async def ws_chat(websocket: WebSocket, user_id: str):
                     else:
                         await websocket.send_json({"type": "token", "content": token})
                 except Exception:
-                    # Connection closed - stop sending
                     break
             
             usage_info = agent.total_token_usage() if hasattr(agent, 'total_token_usage') else {}
