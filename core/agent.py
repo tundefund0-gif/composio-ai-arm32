@@ -595,21 +595,15 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
             if not tool_calls_data and full_content:
                 dsml_calls = _parse_dsml_tool_calls(full_content)
                 if dsml_calls:
-                    dsml_found = True
                     tool_names = [c["function"]["name"] for c in dsml_calls]
-                    logger.info("DSML: found %d tool calls in streamed text (depth=%d): %s", len(dsml_calls), depth, tool_names)
-                    logger.debug("DSML raw text (first 300): %s", full_content[:300])
-                    dsml_calls = _normalize_tool_calls(dsml_calls)
-                    tool_calls_data = [
-                        {"id": c["id"], "function": c["function"]}
-                        for c in dsml_calls
-                    ]
-                    # Yield only the non-DSML prefix text if any, then status
-                    cleaned = _strip_dsml_tags(full_content)
+                    logger.info("DSML: stripped %d tool calls from stream: %s", len(dsml_calls), tool_names)
+                    # Strip DSML tags and yield clean text only (no recursive tool execution)
+                    cleaned = _strip_dsml_tags(full_content) or full_content
                     cleaned = _normalize_text(cleaned)
                     if cleaned:
-                        yield cleaned + "\n\n"
-                    yield "__status__:⚙️ Executing tools (step " + str(depth + 1) + ")..."
+                        yield cleaned
+                    self._messages.append({"role": "assistant", "content": cleaned or ""})
+                    break
 
             # If no DSML and no tool calls, yield buffered content now
             if not dsml_found and not tool_calls_data:
