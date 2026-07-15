@@ -5,7 +5,7 @@
 httpx>=0.28.0
 
 # Web framework - use FastAPI 0.99.x for pydantic v1 compatibility
-fastapi>=0.100.0,<1.0.0
+fastapi>=0.88.0,<0.100.0
 
 # ASGI server - without [standard] to skip watchfiles (Rust dep)
 uvicorn>=0.30.0

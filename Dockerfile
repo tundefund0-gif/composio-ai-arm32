@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps
-COPY requirements.txt .
+COPY requirements-armv7.txt requirements.txt .
 RUN pip install --no-cache-dir -r requirements-armv7.txt
 
 # Copy app
