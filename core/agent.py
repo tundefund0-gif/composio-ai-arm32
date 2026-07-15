@@ -777,8 +777,15 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
 
     # ── Tool execution ───────────────────────────────────────
     def _exec_composio(self, action: str, args: Dict) -> Dict[str, Any]:
+        import concurrent.futures
         try:
-            return self._composio.execute_meta(self.session_id, action, args)
+            # Run tool execution with 30s timeout
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(self._composio.execute_meta, self.session_id, action, args)
+                return fut.result(timeout=30)
+        except concurrent.futures.TimeoutError:
+            logger.warning("Tool %s timed out after 30s", action)
+            return {"error": f"Tool execution timed out after 30 seconds", "action": action}
         except ComposioAPIError as e:
             logger.error("Tool %s failed: %s", action, e)
             err_body = str(e.body)[:500] if e.body else ""
