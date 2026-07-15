@@ -1,5 +1,6 @@
 """Zen Agent — FastAPI server with REST + WebSocket streaming, long-text, health."""
 from __future__ import annotations
+import asyncio
 
 import json
 import logging
@@ -315,33 +316,98 @@ async def ws_chat(websocket: WebSocket, user_id: str):
                 agent.clear_history()
                 await websocket.send_json({"type": "clear"})
                 continue
+            if msg.strip().lower() == "/ping":
+                await websocket.send_json({"type": "pong"})
+                continue
             if len(msg) > config.max_message_length:
                 await websocket.send_json({"type": "error", "message": f"Message too long (max {config.max_message_length:,} chars)"})
                 continue
-            full = ""
-            try:
-                for token in agent.chat(msg, stream=True):
+            # Run blocking agent.chat in a thread to avoid blocking event loop
+            loop = asyncio.get_running_loop()
+            token_queue = asyncio.Queue()
+            full_result = []
+            stream_error = None
+            
+            def _run_chat():
+                nonlocal stream_error
+                try:
+                    for token in agent.chat(msg, stream=True):
+                        try:
+                            # Use run_coroutine_threadsafe to put from this thread
+                            fut = asyncio.run_coroutine_threadsafe(
+                                token_queue.put(("token", token)), loop
+                            )
+                            fut.result(timeout=10)
+                        except Exception:
+                            break
+                    # Signal done
+                    asyncio.run_coroutine_threadsafe(
+                        token_queue.put(("done", None)), loop
+                    ).result(timeout=10)
+                except Exception as e:
+                    stream_error = e
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            token_queue.put(("error", e)), loop
+                        ).result(timeout=10)
+                    except Exception:
+                        pass
+            
+            # Start the blocking chat in a thread
+            import threading
+            _ws_stop = threading.Event()
+            def _run_chat_clean():
+                try:
+                    _run_chat()
+                except Exception as e:
+                    if not _ws_stop.is_set():
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                token_queue.put(("error", e)), loop
+                            ).result(timeout=10)
+                        except Exception:
+                            pass
+            
+            chat_thread = threading.Thread(target=_run_chat_clean, daemon=True)
+            chat_thread.start()
+            
+            # Read tokens from queue and send to WebSocket
+            full_content = ""
+            while True:
+                try:
+                    msg_type, msg_data = await asyncio.wait_for(token_queue.get(), timeout=60)
+                except asyncio.TimeoutError:
+                    logger.warning("WS token queue timeout for %s", user_id)
+                    await websocket.send_json({"type": "error", "message": "Response timed out"})
+                    _ws_stop.set()
+                    break
+                
+                if msg_type == "token":
+                    token = msg_data
+                    full_content += token
                     try:
                         if token.startswith("__reasoning__"):
                             await websocket.send_json({"type": "reasoning", "content": token[13:]})
                         elif token.startswith("__status__:"):
                             await websocket.send_json({"type": "status", "content": token[11:]})
                         else:
-                            full += token
                             await websocket.send_json({"type": "token", "content": token})
                     except Exception as send_err:
                         logger.warning("WS send failed (likely disconnected): %s", send_err)
+                        _ws_stop.set()
                         break
-                usage_info = agent.total_token_usage() if hasattr(agent, 'total_token_usage') else {}
-                await websocket.send_json({"type": "done", "content": full, "tokens": usage_info.get("message_count", 0)})
-            except WebSocketDisconnect:
-                logger.info("WS disconnected during chat: %s", user_id)
-            except Exception as e:
-                logger.exception("WS chat error for %s", user_id)
-                try:
-                    await websocket.send_json({"type": "error", "message": str(e)[:500]})
-                except Exception:
-                    pass
+                elif msg_type == "done":
+                    usage_info = agent.total_token_usage() if hasattr(agent, 'total_token_usage') else {}
+                    await websocket.send_json({"type": "done", "content": full_content, "tokens": usage_info.get("message_count", 0)})
+                    break
+                elif msg_type == "error":
+                    e = msg_data
+                    logger.exception("WS chat error for %s", user_id)
+                    try:
+                        await websocket.send_json({"type": "error", "message": str(e)[:500]})
+                    except Exception:
+                        pass
+                    break
     except WebSocketDisconnect:
         logger.info("WS disconnected: %s", user_id)
     except Exception as e:

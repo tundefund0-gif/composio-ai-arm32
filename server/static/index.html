@@ -429,25 +429,42 @@ function switchPage(name) {
 }
 
 // ─── WebSocket ─────────────────────────────────────────
+let wsKeepaliveTimer = null;
+
 function connectWS() {
   if (ws) try { ws.close(); } catch(e) {}
   const p = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${p}//${location.host}/ws/chat/web-user`);
-  ws.onopen = () => { updateStatus('Online'); reconAttempts = 0; };
+  ws.onopen = () => { 
+    updateStatus('Online'); reconAttempts = 0;
+    // Start keepalive ping every 15 seconds
+    if (wsKeepaliveTimer) clearInterval(wsKeepaliveTimer);
+    wsKeepaliveTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ message: '/ping' })); } catch(e) {}
+      }
+    }, 15000);
+  };
   ws.onmessage = e => { try { handleWS(JSON.parse(e.data)); } catch(_) {} };
   ws.onclose = () => {
-    updateStatus('Offline'); isStreaming = false;
-    hideTyping();
-    if (reconAttempts < 5) {
+    if (wsKeepaliveTimer) { clearInterval(wsKeepaliveTimer); wsKeepaliveTimer = null; }
+    updateStatus('Offline');
+    // Don't hide typing or reset streaming on unexpected disconnect - let it recover
+    if (!isStreaming) {
+      hideTyping();
+    }
+    if (reconAttempts < 10) {
       reconAttempts++;
-      const delay = Math.min(1000 * reconAttempts + Math.random() * 500, 8000);
+      const delay = Math.min(2000 * reconAttempts + Math.random() * 1000, 15000);
       setTimeout(connectWS, delay);
     } else {
       updateStatus('Disconnected');
       showToast('Connection lost. Refresh to reconnect.', 'error');
+      isStreaming = false;
+      hideTyping();
     }
   };
-  ws.onerror = () => updateStatus('Reconnecting...');
+  ws.onerror = () => { if (ws.readyState !== WebSocket.OPEN) updateStatus('Reconnecting...'); };
 }
 
 function handleWS(d) {
@@ -463,6 +480,7 @@ function handleWS(d) {
     case 'reasoning': appendReasoning(d.content); break;
     case 'done': finishStream(d.content); break;
     case 'clear': clearChat(); break;
+    case 'pong': break; /* keepalive */
     case 'error': showToast(d.message || 'Error', 'error'); finishStream(null); break;
   }
 }
