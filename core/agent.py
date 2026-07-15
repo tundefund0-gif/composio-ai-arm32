@@ -81,8 +81,6 @@ def _parse_dsml_tool_calls(text):
                     _pd + r'<parameter\s+name="([a-zA-Z_]\w*)"[^>]*>(.*?)</' + _pd + r'parameter[^>]*>',
                     body, _re.DOTALL
                 )
-            for name, body in invokes:
-                params = param_re.findall(body)
                 args = {}
                 for pname, pval in params:
                     pval = pval.strip()

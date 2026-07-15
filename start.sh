@@ -13,7 +13,7 @@ cd "$DIR"
 export OPENGATE_API_KEY="${OPENGATE_API_KEY:-}"
 export COMPOSIO_API_KEY="${COMPOSIO_API_KEY:-}"
 export OPENGATE_BASE_URL="${OPENGATE_BASE_URL:-https://opencode.ai/zen/v1}"
-export OPENGATE_MODEL="${OPENGATE_MODEL:-deepseek-v4-flash-free}"
+export OPENGATE_MODEL="${OPENGATE_MODEL:-big-pickle}"
 export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-9090}"
 

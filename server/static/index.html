@@ -374,7 +374,13 @@ let _reasoningBuf = '';
   await loadChatList();
   connectWS();
   const lastId = localStorage.getItem('za-activeChat');
-  if (lastId && chats[lastId]) await openChatById(lastId);
+  if (lastId && chats[lastId]) {
+    await openChatById(lastId);
+  } else {
+    localStorage.removeItem('za-activeChat');
+    currentChatId = null;
+    chatMessages = [];
+  }
 })();
 
 function toggleTheme() {
@@ -501,7 +507,7 @@ async function loadChatList() {
 function saveChats() {
   const toSave = {};
   Object.entries(chats).forEach(([k, v]) => {
-    toSave[k] = { id: v.id, title: v.title, createdAt: v.createdAt, updatedAt: v.updatedAt, messages: (v.messages || []).slice(-100) };
+    toSave[k] = { id: v.id, title: v.title, createdAt: v.createdAt, updatedAt: v.updatedAt, messages: (v.messages || []).slice(-500) };
   });
   try { localStorage.setItem('za-chats', JSON.stringify(toSave)); } catch(e) {}
 }
@@ -510,11 +516,16 @@ async function startNewChat() {
   currentChatId = 'chat_' + Date.now();
   chats[currentChatId] = { id: currentChatId, title: 'New Conversation', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [] };
   chatMessages = [];
+  _reasoningBuf = '';
   renderMessages([]);
   localStorage.setItem('za-activeChat', currentChatId);
   saveChats();
   await loadChatList();
   closeSidebar();
+  // Reset server agent context
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify({ message: '/clear' })); } catch(e) {}
+  }
 }
 
 async function openChatById(id) {
@@ -795,7 +806,10 @@ async function sendRestMessage(text) {
       document.getElementById('sysSession').textContent = d.session_id;
     }
     hideTyping();
-    if (d.response) appendMessage({ role: 'assistant', content: d.response });
+    if (d.response) {
+      chatMessages.push({ role: 'assistant', content: d.response });
+      appendMessage({ role: 'assistant', content: d.response });
+    }
     finishStream(d.response || null);
   } catch(e) { showToast('Request failed: ' + e.message, 'error'); hideTyping(); finishStream(null); }
 }

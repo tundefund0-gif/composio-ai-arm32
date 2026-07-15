@@ -31,7 +31,7 @@ class Config:
     # LLM
     opencode_api_key: str = field(default_factory=lambda: os.environ.get("OPENGATE_API_KEY", ""))
     opencode_base_url: str = field(default_factory=lambda: os.environ.get("OPENGATE_BASE_URL", "https://opencode.ai/zen/v1"))
-    opencode_model: str = field(default_factory=lambda: os.environ.get("OPENGATE_MODEL", "deepseek-v4-flash-free"))
+    opencode_model: str = field(default_factory=lambda: os.environ.get("OPENGATE_MODEL", "big-pickle"))
     opencode_max_tokens: int = int(os.environ.get("OPENGATE_MAX_TOKENS", "131072"))
     opencode_fallback_model: str = field(default_factory=lambda: os.environ.get("OPENGATE_FALLBACK_MODEL", ""))
     opencode_fallback_base_url: str = field(default_factory=lambda: os.environ.get("OPENGATE_FALLBACK_BASE_URL", ""))
@@ -51,7 +51,7 @@ class Config:
     data_dir: str = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 
     # Limits
-    max_history_messages: int = int(os.environ.get("MAX_HISTORY_MESSAGES", "60"))
+    max_history_messages: int = int(os.environ.get("MAX_HISTORY_MESSAGES", "100"))
     max_tool_results_length: int = int(os.environ.get("MAX_TOOL_RESULTS_LENGTH", "15000"))
     request_timeout: float = float(os.environ.get("REQUEST_TIMEOUT", "300.0"))
     llm_timeout: float = float(os.environ.get("LLM_TIMEOUT", "300.0"))
