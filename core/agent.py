@@ -441,8 +441,8 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
         return resp
 
     def _handle_tools(self, resp: LLMResponse, msgs: List[Dict], _depth: int = 0) -> LLMResponse:
-        if _depth > 8:
-            logger.warning("Tool call depth exceeded (limit 8), generating summary")
+        if _depth > 5:
+            logger.warning("Tool call depth exceeded (limit 5), generating summary")
             # Do a final non-streaming call asking for summary
             summary_msgs = [msgs[0], {"role": "user", "content": "Summarize what was accomplished so far based on the tool results. Be concise."}]
             tool_count = 0
@@ -540,13 +540,14 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
                 "model": self._llm.model,
             })
         # Model may output tool calls as DSML text in the follow-up response
-        dsml_calls = _parse_dsml_tool_calls(final.content) if final.content else None
-        if dsml_calls:
-            logger.info("DSML: found %d tool calls in follow-up text (depth=%d)", len(dsml_calls), _depth)
-            final.tool_calls = _normalize_tool_calls(dsml_calls)
-            final.message["content"] = _strip_dsml_tags(final.content) or None
-            final.content = final.message["content"] or ""
-            return self._handle_tools(final, msgs, _depth + 1)
+        # Strip DSML tags and use the clean text as the final response (don't recurse)
+        if final.content:
+            cleaned = _strip_dsml_tags(final.content)
+            if cleaned != final.content:
+                logger.info("DSML: stripped %d chars of markup from model response (depth=%d)", len(final.content) - len(cleaned), _depth)
+            final.content = _normalize_text(cleaned or "")
+            final.message["content"] = final.content
+        final.tool_calls = None
         # Clean any remaining DSML/XML markup
         if final.content:
             cleaned = _strip_dsml_tags(final.content)
@@ -665,8 +666,8 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
                 self._messages.append(tool_msg)
 
             depth += 1
-            if depth > 8:
-                logger.warning("Streaming tool call depth exceeded (limit 8)")
+            if depth > 5:
+                logger.warning("Streaming tool call depth exceeded (limit 5)")
                 # Use tool results for a final summary instead of breaking with error
                 summary_msgs = [msgs[0], {"role": "user", "content": "Summarize what was accomplished so far based on the tool results. Be concise."}]
                 # Add last few tool results for context
