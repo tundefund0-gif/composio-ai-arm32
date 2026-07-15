@@ -192,14 +192,8 @@ async def chat(req: ChatReq):
         resp = agent.chat(req.message)
         if not isinstance(resp, LLMResponse):
             raise HTTPException(500, "Internal error")
-        # DEBUG: dump exact content
-        import logging as _lg2
-        _c = resp.content or ''
-        _lg2.getLogger("zen-server").info("API content_len=%d", len(_c))
-        _lg2.getLogger("zen-server").info("API content_repr=%s", repr(_c[:300]))
-        _lg2.getLogger("zen-server").info("API has_dsml=%s", str('<tool_calls>' in _c or '<tool_call>' in _c))
         return ChatResp(
-            response=_c or "",
+            response=resp.content or "",
             reasoning=resp.reasoning[:3000] if resp.reasoning else "",
             session_id=agent.session_id or "",
             user_id=req.user_id,
@@ -311,8 +305,10 @@ async def ws_chat(websocket: WebSocket, user_id: str):
             try:
                 data = json.loads(raw)
                 msg = data.get("message", "")
+                history = data.get("history", None)
             except json.JSONDecodeError:
                 msg = raw
+                history = None
             if not msg.strip():
                 continue
             if msg.strip().lower() == "/clear":
@@ -320,8 +316,22 @@ async def ws_chat(websocket: WebSocket, user_id: str):
                 await websocket.send_json({"type": "clear"})
                 continue
             if msg.strip().lower() == "/ping":
-                # Silently ignore - ping is just to keep connection alive
                 continue
+            if msg.strip().lower() == "/resync":
+                # Resync agent context with provided history
+                if history:
+                    if isinstance(history, list):
+                        agent.load_context(history)
+                        await websocket.send_json({"type": "resynced", "count": len(history)})
+                    else:
+                        await websocket.send_json({"type": "error", "message": "Invalid history format"})
+                else:
+                    await websocket.send_json({"type": "error", "message": "No history provided"})
+                continue
+            # Sync agent context with client history if provided
+            if history and isinstance(history, list) and len(history) > 0:
+                # Only resync if client history differs from agent state
+                agent.load_context(history)
             if len(msg) > config.max_message_length:
                 await websocket.send_json({"type": "error", "message": f"Message too long (max {config.max_message_length:,} chars)"})
                 continue

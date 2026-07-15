@@ -400,6 +400,11 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
     def clear_history(self):
         self._messages = []
 
+    def load_context(self, history):
+        """Load previous messages into agent context without re-processing."""
+        self._messages = list(history) if history else []
+        logger.info("Loaded %d messages into agent context for %s", len(self._messages), self.user_id)
+
     def get_info(self) -> Dict:
         usage = self.total_token_usage()
         return {
@@ -436,6 +441,10 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
         # Normalize text formatting
         if resp.content:
             resp.content = _normalize_text(resp.content)
+            resp.message["content"] = resp.content
+        else:
+            # Empty response - use fallback
+            resp.content = "I processed your request. The response was empty."
             resp.message["content"] = resp.content
         self._messages.append({"role": "assistant", "content": resp.content})
         return resp
@@ -545,8 +554,21 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
             cleaned = _strip_dsml_tags(final.content)
             if cleaned != final.content:
                 logger.info("DSML: stripped %d chars of markup from model response (depth=%d)", len(final.content) - len(cleaned), _depth)
-            final.content = _normalize_text(cleaned or "")
-            final.message["content"] = final.content
+            cleaned = _normalize_text(cleaned)
+            if cleaned:
+                final.content = cleaned
+                final.message["content"] = cleaned
+            else:
+                # DSML-only response - use fallback
+                fallback = "I processed your request and executed the tools. "
+                if tool_results_text:
+                    # Try to include a hint of what happened
+                    last_result = tool_results_text[-1][:300] if tool_results_text else ""
+                    fallback = "Here are the results from executing the tools:\n\n" + last_result
+                else:
+                    fallback = "I processed your request but the response contained only tool instructions. The tool execution result is shown above."
+                final.content = fallback
+                final.message["content"] = fallback
         final.tool_calls = None
         # Clean any remaining DSML/XML markup
         if final.content:
@@ -596,14 +618,11 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
                 dsml_calls = _parse_dsml_tool_calls(full_content)
                 if dsml_calls:
                     tool_names = [c["function"]["name"] for c in dsml_calls]
-                    logger.info("DSML: stripped %d tool calls from stream: %s", len(dsml_calls), tool_names)
-                    # Strip DSML tags and yield clean text only (no recursive tool execution)
-                    cleaned = _strip_dsml_tags(full_content) or full_content
-                    cleaned = _normalize_text(cleaned)
-                    if cleaned:
-                        yield cleaned
-                    self._messages.append({"role": "assistant", "content": cleaned or ""})
-                    break
+                    logger.info("DSML: executing %d tool calls from stream text: %s", len(dsml_calls), tool_names)
+                    # Execute DSML tool calls directly instead of just stripping them
+                    tool_calls_data = _normalize_tool_calls(dsml_calls)
+                    dsml_found = True
+                    # Don't break - proceed to execute the tools below
 
             # If no DSML and no tool calls, yield buffered content now
             if not dsml_found and not tool_calls_data:
@@ -615,11 +634,11 @@ COMPOSIO_MULTI_EXECUTE_TOOL with tools array:
                 self._messages.append({"role": "assistant", "content": cleaned or "(no response)"})
                 break
 
-            # If no DSML but we have proper tool_calls from API, yield content now
-            if not dsml_found and tool_calls_data:
+            # Yield any cleaned text from buffer before executing tools (works for both DSML and proper tool_calls)
+            if tool_calls_data:
                 for t in content_buffer:
                     cleaned_t = _strip_dsml_tags(t)
-                    if cleaned_t:
+                    if cleaned_t and cleaned_t.strip():
                         yield cleaned_t
 
             # Execute tools and loop

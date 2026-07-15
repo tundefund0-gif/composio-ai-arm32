@@ -381,6 +381,15 @@ let _reasoningBuf = '';
     currentChatId = null;
     chatMessages = [];
   }
+  // Send resync to server with current context
+  if (currentChatId && chats[currentChatId] && chats[currentChatId].messages && chats[currentChatId].messages.length > 0) {
+    setTimeout(() => {
+      const validHistory = chats[currentChatId].messages.filter(m => m.role && m.content);
+      if (validHistory.length > 0 && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ message: '/resync', history: validHistory }));
+      }
+    }, 1000);
+  }
 })();
 
 function toggleTheme() {
@@ -492,9 +501,16 @@ function handleWS(d) {
   }
 }
 
-function wsSend(msg) {
+function wsSend(data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    try { ws.send(JSON.stringify({message:msg})); return true; }
+    try {
+      if (typeof data === 'string') {
+        ws.send(JSON.stringify({message: data}));
+      } else {
+        ws.send(JSON.stringify(data));
+      }
+      return true;
+    }
     catch(e) { console.warn('WS send failed:', e); return false; }
   }
   return false;
@@ -552,6 +568,14 @@ async function startNewChat() {
   if (ws && ws.readyState === WebSocket.OPEN) {
     try { ws.send(JSON.stringify({ message: '/clear' })); } catch(e) {}
   }
+  // Reset any accumulated tokens
+  isStreaming = false;
+  document.getElementById('sendBtn').style.display = 'flex';
+  document.getElementById('stopBtn').style.display = 'none';
+  updateSendBtn();
+  updateInputStats();
+  // Reset thinking state
+  document.querySelectorAll('.thinking-pulse').forEach(p => p.classList.remove('done'));
 }
 
 async function openChatById(id) {
@@ -695,7 +719,14 @@ function finishStream(full) {
   hideTyping();
   let msgLen = 0;
   if (full) {
-    const el = document.querySelector('#messages .message:last-child .msg-bubble');
+    // Check if we have an assistant message element from streaming (appendToken)
+    let el = document.querySelector('#messages .message:last-child .msg-bubble');
+    let lastMsgRole = document.querySelector('#messages .message:last-child');
+    // If last message is user message or no assistant element exists (REST fallback), append a new one
+    if (!el || (lastMsgRole && lastMsgRole.classList.contains('user'))) {
+      appendMessage({ role: 'assistant', content: full });
+      el = document.querySelector('#messages .message:last-child .msg-bubble');
+    }
     if (el) {
       const span = el.querySelector('span.cursor');
       if (span) span.remove();
@@ -711,16 +742,6 @@ function finishStream(full) {
     }
     msgLen = full.length;
     chatMessages.push({ role: 'assistant', content: full });
-    // Add token badge to last assistant message
-    const lastMsg = document.querySelector('#messages .message:last-child .msg-bubble');
-    if (lastMsg && !lastMsg.querySelector('.token-badge-done')) {
-      const badge = document.createElement('span');
-      badge.className = 'token-badge-done';
-      badge.textContent = msgLen + ' chars';
-      badge.style.cssText = 'font-size:0.6rem;color:var(--text3);padding:2px 6px;border-radius:4px;background:var(--surface2);margin-left:8px;white-space:nowrap';
-      lastMsg.appendChild(badge);
-    }
-    if (currentChatId && chats[currentChatId]) {
       chats[currentChatId].messages = chatMessages.slice();
       const firstUser = chatMessages.find(m => m.role === 'user');
       if (firstUser && (!chats[currentChatId].title || chats[currentChatId].title === 'New Conversation')) {
@@ -818,7 +839,16 @@ async function sendMessage() {
   document.getElementById('sendBtn').style.display = 'none';
   document.getElementById('stopBtn').style.display = 'flex';
   updateSendBtn(); updateInputStats();
-  if (!wsSend(text)) await sendRestMessage(text);
+  // Include chat history for context sync
+  const ctx = { message: text };
+  if (currentChatId && chats[currentChatId] && chats[currentChatId].messages && chats[currentChatId].messages.length > 0) {
+    // Only send history that has actual content
+    const validHistory = chats[currentChatId].messages.filter(m => m.role && m.content);
+    if (validHistory.length > 0) {
+      ctx.history = validHistory;
+    }
+  }
+  if (!wsSend(ctx)) await sendRestMessage(text);
 }
 
 async function sendRestMessage(text) {
@@ -836,8 +866,7 @@ async function sendRestMessage(text) {
     }
     hideTyping();
     if (d.response) {
-      chatMessages.push({ role: 'assistant', content: d.response });
-      appendMessage({ role: 'assistant', content: d.response });
+      // finishStream will handle appending to chatMessages
     }
     finishStream(d.response || null);
   } catch(e) { showToast('Request failed: ' + e.message, 'error'); hideTyping(); finishStream(null); }
@@ -852,6 +881,11 @@ function abortStream() {
 
 function clearChat() {
   chatMessages = []; _streamingRawText = ''; _reasoningBuf = ''; renderMessages([]);
+  if (currentChatId && chats[currentChatId]) {
+    chats[currentChatId].messages = [];
+    chats[currentChatId].title = 'New Conversation';
+    saveChats(); loadChatList();
+  }
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ message: '/clear' }));
 }
 function sendSuggestion(text) {
